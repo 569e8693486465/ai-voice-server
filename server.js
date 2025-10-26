@@ -11,87 +11,135 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 3001;
+const DOMAIN =
+  process.env.RENDER_EXTERNAL_URL ||
+  process.env.BASE_URL ||
+  "ai-voice-server-t4l5.onrender.com";
 
-// ✅ Twilio endpoint — tells Twilio to connect via WebSocket
+const WS_URL = `wss://${DOMAIN}/api/phone/ws`;
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+
+if (!GOOGLE_API_KEY) {
+  console.error("❌ Missing GOOGLE_API_KEY in environment variables!");
+}
+
+const WELCOME_GREETING =
+  "Hi! I am a voice assistant powered by Twilio and Google Gemini. Ask me anything!";
+const SYSTEM_PROMPT = `
+You are a helpful and friendly voice assistant. This conversation is happening over a phone call.
+Follow these rules:
+1. Be concise and clear.
+2. Speak naturally.
+3. Avoid special characters or emojis.
+4. Keep your tone friendly and conversational.
+`;
+
+// ✅ Endpoint for Twilio to get TwiML
 app.post("/api/phone/twiml", (req, res) => {
-  const rawBase =
-    process.env.RENDER_EXTERNAL_URL ||
-    process.env.BASE_URL ||
-    req.headers.host ||
-    "localhost";
-
-  // Remove "https://" or "http://"
-  const cleanBase = rawBase.replace(/^https?:\/\//, "");
-
-  const wsUrl = `wss://${cleanBase}/api/phone/ws`;
-  console.log("[TwiML] Using WebSocket URL:", wsUrl);
-
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <ConversationRelay
-      url="${wsUrl}"
-      welcomeGreeting="Hello! I’m your AI voice assistant powered by Gemini. How can I help you today?"
+    <ConversationRelay 
+      url="${WS_URL}" 
+      welcomeGreeting="${WELCOME_GREETING}" 
       ttsProvider="Google"
-      voice="en-US-Standard-C"
+      voice="en-US-Standard-C" 
       language="en-US" />
   </Connect>
 </Response>`;
-
   res.type("text/xml");
-  res.send(twiml);
+  res.send(xml);
 });
 
-// ✅ WebSocket server — where Twilio and Gemini talk
+// ✅ Store active sessions (in memory)
+const sessions = new Map();
+
+// ✅ WebSocket server for Twilio voice stream
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on("connection", (ws) => {
   console.log("🔗 Twilio connected via WebSocket");
 
-  ws.on("message", async (message) => {
-    const text = message.toString();
-    console.log("🗣️ User said:", text);
+  let callSid = null;
 
-    const apiKey = process.env.GOOGLE_API_KEY;
-    if (!apiKey) {
-      ws.send("❌ Missing GOOGLE_API_KEY.");
-      return;
-    }
-
+  ws.on("message", async (raw) => {
     try {
-      const response = await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            contents: [{ role: "user", parts: [{ text }] }],
-          }),
-        }
-      );
+      const msg = JSON.parse(raw.toString());
 
-      const data = await response.json();
-      const reply =
-        data.candidates?.[0]?.content?.parts?.[0]?.text ||
-        "I'm not sure how to respond to that.";
+      // First message from Twilio is "setup"
+      if (msg.type === "setup") {
+        callSid = msg.callSid;
+        console.log(`🟢 Setup for call: ${callSid}`);
+        sessions.set(callSid, []);
+      }
 
-      console.log("🤖 Gemini replied:", reply);
-      ws.send(reply);
+      // When user says something
+      else if (msg.type === "prompt") {
+        const userPrompt = msg.voicePrompt;
+        console.log(`🗣️ User said: ${userPrompt}`);
+
+        // Keep chat history for context
+        const history = sessions.get(callSid) || [];
+        history.push({ role: "user", parts: [{ text: userPrompt }] });
+
+        // Call Gemini API
+        const geminiResponse = await fetch(
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${GOOGLE_API_KEY}`,
+            },
+            body: JSON.stringify({
+              contents: [
+                { role: "system", parts: [{ text: SYSTEM_PROMPT }] },
+                ...history,
+              ],
+            }),
+          }
+        );
+
+        const data = await geminiResponse.json();
+        const reply =
+          data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+          "Sorry, I didn’t catch that.";
+
+        console.log("🤖 Gemini replied:", reply);
+
+        // Save assistant reply in history
+        history.push({ role: "model", parts: [{ text: reply }] });
+        sessions.set(callSid, history);
+
+        // Send text back to Twilio (it will speak it)
+        ws.send(
+          JSON.stringify({
+            type: "text",
+            token: reply,
+            last: true,
+          })
+        );
+      }
+
+      // Handle hang-up or interruption
+      else if (msg.type === "interrupt") {
+        console.log(`🚫 Call interrupted for ${callSid}`);
+      }
     } catch (err) {
-      console.error("❌ Error talking to Gemini:", err);
-      ws.send("Error connecting to Gemini API.");
+      console.error("❌ Error handling message:", err);
     }
   });
 
-  ws.on("close", () => console.log("❌ Twilio disconnected"));
+  ws.on("close", () => {
+    console.log(`❌ Twilio disconnected: ${callSid}`);
+    if (callSid) sessions.delete(callSid);
+  });
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+// ✅ HTTP Upgrade for WebSocket
+const server = app.listen(PORT, () =>
+  console.log(`🚀 Server running on port ${PORT}`)
+);
 
 server.on("upgrade", (req, socket, head) => {
   if (req.url === "/api/phone/ws") {
