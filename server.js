@@ -11,14 +11,17 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 3001;
-const DOMAIN =
+
+// 🧩 מנקים את הדומיין מכל http:// או https:// כדי למנוע כפילות
+const rawDomain =
   process.env.RENDER_EXTERNAL_URL ||
   process.env.BASE_URL ||
   "ai-voice-server-t4l5.onrender.com";
 
-const WS_URL = `wss://${DOMAIN}/api/phone/ws`;
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+const cleanDomain = rawDomain.replace(/^https?:\/\//, "");
+const WS_URL = `wss://${cleanDomain}/api/phone/ws`;
 
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 if (!GOOGLE_API_KEY) {
   console.error("❌ Missing GOOGLE_API_KEY in environment variables!");
 }
@@ -78,11 +81,10 @@ wss.on("connection", (ws) => {
         const userPrompt = msg.voicePrompt;
         console.log(`🗣️ User said: ${userPrompt}`);
 
-        // Keep chat history for context
         const history = sessions.get(callSid) || [];
         history.push({ role: "user", parts: [{ text: userPrompt }] });
 
-        // Call Gemini API
+        // ✅ Call Gemini API
         const geminiResponse = await fetch(
           "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
           {
@@ -107,7 +109,6 @@ wss.on("connection", (ws) => {
 
         console.log("🤖 Gemini replied:", reply);
 
-        // Save assistant reply in history
         history.push({ role: "model", parts: [{ text: reply }] });
         sessions.set(callSid, history);
 
@@ -121,7 +122,6 @@ wss.on("connection", (ws) => {
         );
       }
 
-      // Handle hang-up or interruption
       else if (msg.type === "interrupt") {
         console.log(`🚫 Call interrupted for ${callSid}`);
       }
