@@ -12,14 +12,20 @@ app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 3001;
 
-// 🧩 מנקים את הדומיין מכל http:// או https:// כדי למנוע כפילות
+// ניקוי מוחלט של כל prefix שקשור ל-http/wss
 const rawDomain =
   process.env.RENDER_EXTERNAL_URL ||
   process.env.BASE_URL ||
   "ai-voice-server-t4l5.onrender.com";
 
-const cleanDomain = rawDomain.replace(/^https?:\/\//, "");
+const cleanDomain = rawDomain
+  .replace(/^https?:\/\//, "")
+  .replace(/^wss?:\/\//, "")
+  .replace(/\/$/, ""); // גם מסיר "/" בסוף אם יש
+
 const WS_URL = `wss://${cleanDomain}/api/phone/ws`;
+
+console.log("🧭 Using WebSocket URL:", WS_URL);
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 if (!GOOGLE_API_KEY) {
@@ -50,6 +56,8 @@ app.post("/api/phone/twiml", (req, res) => {
       language="en-US" />
   </Connect>
 </Response>`;
+
+  console.log("📨 Sending TwiML:", xml);
   res.type("text/xml");
   res.send(xml);
 });
@@ -69,22 +77,17 @@ wss.on("connection", (ws) => {
     try {
       const msg = JSON.parse(raw.toString());
 
-      // First message from Twilio is "setup"
       if (msg.type === "setup") {
         callSid = msg.callSid;
         console.log(`🟢 Setup for call: ${callSid}`);
         sessions.set(callSid, []);
-      }
-
-      // When user says something
-      else if (msg.type === "prompt") {
+      } else if (msg.type === "prompt") {
         const userPrompt = msg.voicePrompt;
         console.log(`🗣️ User said: ${userPrompt}`);
 
         const history = sessions.get(callSid) || [];
         history.push({ role: "user", parts: [{ text: userPrompt }] });
 
-        // ✅ Call Gemini API
         const geminiResponse = await fetch(
           "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
           {
@@ -112,7 +115,6 @@ wss.on("connection", (ws) => {
         history.push({ role: "model", parts: [{ text: reply }] });
         sessions.set(callSid, history);
 
-        // Send text back to Twilio (it will speak it)
         ws.send(
           JSON.stringify({
             type: "text",
@@ -120,9 +122,7 @@ wss.on("connection", (ws) => {
             last: true,
           })
         );
-      }
-
-      else if (msg.type === "interrupt") {
+      } else if (msg.type === "interrupt") {
         console.log(`🚫 Call interrupted for ${callSid}`);
       }
     } catch (err) {
