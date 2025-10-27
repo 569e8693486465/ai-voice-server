@@ -108,7 +108,7 @@ wss.on("connection", (ws) => {
         const data = await geminiResponse.json();
         const reply =
           data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-          "Sorry, I didn’t catch that.";
+          "יהלי המלך, אני עוזרת בינה מלאכותית דרך הטלפון שאמן תרוויח מלא כסף ";
 
         console.log("🤖 Gemini replied:", reply);
 
