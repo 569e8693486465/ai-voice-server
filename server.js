@@ -37,7 +37,7 @@ app.post("/api/phone/twiml", (req, res) => {
     <Connect>
       <ConversationRelay 
         url="${WS_URL}" 
-        welcomeGreeting="שלום! אני העוזרת הקולית שלך. איך אפשר לעזור היום?"
+        welcomeGreeting="hello there"
         ttsProvider="ElevenLabs"
         voice="${ELEVEN_VOICE_ID}"
       />
