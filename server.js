@@ -10,13 +10,16 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// 🟢 Port set to 3000 for compatibility with Next.js / Render
+// 🟢 Port (אתה יכול לשנות ל־3000 או 3001)
 const PORT = process.env.PORT || 3000;
 
-const DOMAIN =
+// 🟢 הגדרת ה־DOMAIN — מנקה https:// אם קיים
+let DOMAIN =
   process.env.RENDER_EXTERNAL_URL ||
   process.env.BASE_URL ||
   "ai-voice-server-t4l5.onrender.com";
+
+DOMAIN = DOMAIN.replace(/^https?:\/\//, ""); // ✅ מנקה https:// או http://
 
 const WS_URL = `wss://${DOMAIN}/api/phone/ws`;
 
@@ -27,7 +30,7 @@ const ELEVEN_VOICE_ID = "cTufqKY4lz94DWjU7clk";
 if (!ELEVEN_API_KEY) console.error("❌ Missing ELEVEN_API_KEY!");
 if (!OPENAI_API_KEY) console.error("❌ Missing OPENAI_API_KEY!");
 
-// ✅ Twilio connects here to get TwiML
+// ✅ Twilio TwiML Endpoint
 app.post("/api/phone/twiml", (req, res) => {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
   <Response>
@@ -63,23 +66,20 @@ wss.on("connection", (ws) => {
         sessions.set(callSid, []);
       }
 
-      // When user speaks
+      // 🎤 When Twilio streams user audio
       else if (msg.type === "media" && msg.media?.payload) {
         const audioBase64 = msg.media.payload;
         const audioBuffer = Buffer.from(audioBase64, "base64");
 
-        // 1️⃣ Convert speech → text via ElevenLabs STT
-        const sttResponse = await fetch(
-          "https://api.elevenlabs.io/v1/speech-to-text",
-          {
-            method: "POST",
-            headers: {
-              "xi-api-key": ELEVEN_API_KEY,
-              "Content-Type": "audio/mpeg",
-            },
-            body: audioBuffer,
-          }
-        );
+        // 1️⃣ Speech → Text (ElevenLabs STT)
+        const sttResponse = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+          method: "POST",
+          headers: {
+            "xi-api-key": ELEVEN_API_KEY,
+            "Content-Type": "audio/mpeg",
+          },
+          body: audioBuffer,
+        });
 
         const sttData = await sttResponse.json();
         const userText = sttData?.text || "";
@@ -87,7 +87,7 @@ wss.on("connection", (ws) => {
 
         if (!userText) return;
 
-        // 2️⃣ Get reply from GPT-4o mini
+        // 2️⃣ Get reply from GPT-4o-mini
         const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
@@ -105,7 +105,7 @@ wss.on("connection", (ws) => {
 
         console.log("🤖 GPT replied:", reply);
 
-        // 3️⃣ Convert reply → speech via ElevenLabs TTS
+        // 3️⃣ Text → Speech (ElevenLabs TTS)
         const ttsResponse = await fetch(
           `https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE_ID}`,
           {
@@ -125,7 +125,7 @@ wss.on("connection", (ws) => {
         const audioReply = await ttsResponse.arrayBuffer();
         const audioReplyBase64 = Buffer.from(audioReply).toString("base64");
 
-        // 4️⃣ Send back as audio
+        // 4️⃣ Send back audio reply to Twilio
         ws.send(
           JSON.stringify({
             type: "media",
@@ -149,8 +149,9 @@ wss.on("connection", (ws) => {
   });
 });
 
+// ✅ Handle HTTP → WebSocket upgrade
 const server = app.listen(PORT, () =>
-  console.log(`🚀 Voice server running on port ${PORT}`)
+  console.log(`🚀 Voice server running on port ${PORT} (domain: ${DOMAIN})`)
 );
 
 server.on("upgrade", (req, socket, head) => {
