@@ -10,46 +10,52 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// 🟢 Port (אתה יכול לשנות ל־3000 או 3001)
-const PORT = process.env.PORT || 3000;
+// 🟢 Port
+const PORT = process.env.PORT || 10000;
 
-// 🟢 הגדרת ה־DOMAIN — מנקה https:// אם קיים
+// 🟢 Domain
 let DOMAIN =
   process.env.RENDER_EXTERNAL_URL ||
   process.env.BASE_URL ||
   "ai-voice-server-t4l5.onrender.com";
 
-DOMAIN = DOMAIN.replace(/^https?:\/\//, ""); // ✅ מנקה https:// או http://
+DOMAIN = DOMAIN.replace(/^https?:\/\//, ""); // מנקה https:// או http://
 
 const WS_URL = `wss://${DOMAIN}/api/phone/ws`;
 
+// 🗝️ Keys + Voice
 const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ELEVEN_VOICE_ID = "cTufqKY4lz94DWjU7clk";
+const ELEVEN_VOICE_ID = process.env.ELEVEN_VOICE_ID || "cTufqKY4lz94DWjU7clk";
 
 if (!ELEVEN_API_KEY) console.error("❌ Missing ELEVEN_API_KEY!");
 if (!OPENAI_API_KEY) console.error("❌ Missing OPENAI_API_KEY!");
 
 // ✅ Twilio TwiML Endpoint
 app.post("/api/phone/twiml", (req, res) => {
+  console.log("📞 TwiML request received");
+
+  // XML עם welcomeGreeting (Twilio תשמיע אותו מיידית עם ElevenLabs)
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
   <Response>
     <Connect>
       <ConversationRelay 
         url="${WS_URL}" 
-        welcomeGreeting="hello there"
+        welcomeGreeting="שלום! אני העוזרת הקולית שלך. איך אפשר לעזור היום?"
         ttsProvider="ElevenLabs"
         voice="${ELEVEN_VOICE_ID}"
+        language="he-IL"
       />
     </Connect>
   </Response>`;
+
   res.type("text/xml");
   res.send(xml);
 });
 
 const sessions = new Map();
 
-// ✅ WebSocket server
+// ✅ WebSocket Server
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on("connection", (ws) => {
@@ -66,7 +72,7 @@ wss.on("connection", (ws) => {
         sessions.set(callSid, []);
       }
 
-      // 🎤 When Twilio streams user audio
+      // 🎤 כשהמשתמש מדבר
       else if (msg.type === "media" && msg.media?.payload) {
         const audioBase64 = msg.media.payload;
         const audioBuffer = Buffer.from(audioBase64, "base64");
@@ -87,7 +93,7 @@ wss.on("connection", (ws) => {
 
         if (!userText) return;
 
-        // 2️⃣ Get reply from GPT-4o-mini
+        // 2️⃣ GPT-4o-mini — יצירת תשובה
         const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
@@ -125,7 +131,7 @@ wss.on("connection", (ws) => {
         const audioReply = await ttsResponse.arrayBuffer();
         const audioReplyBase64 = Buffer.from(audioReply).toString("base64");
 
-        // 4️⃣ Send back audio reply to Twilio
+        // 4️⃣ שליחה חזרה לטוויליו
         ws.send(
           JSON.stringify({
             type: "media",
@@ -134,6 +140,7 @@ wss.on("connection", (ws) => {
         );
       }
 
+      // 🔴 סגירת שיחה
       else if (msg.type === "close") {
         console.log(`❌ Call ended ${callSid}`);
         if (callSid) sessions.delete(callSid);
@@ -149,7 +156,7 @@ wss.on("connection", (ws) => {
   });
 });
 
-// ✅ Handle HTTP → WebSocket upgrade
+// ✅ Handle HTTP → WS Upgrade
 const server = app.listen(PORT, () =>
   console.log(`🚀 Voice server running on port ${PORT} (domain: ${DOMAIN})`)
 );
