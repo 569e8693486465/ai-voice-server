@@ -44,7 +44,6 @@ app.post("/api/phone/twiml", (req, res) => {
         welcomeGreeting="שלום! אני העוזרת הקולית שלך. איך אפשר לעזור היום?"
         ttsProvider="ElevenLabs"
         voice="${ELEVEN_VOICE_ID}"
-        language="he-IL"
       />
     </Connect>
   </Response>`;
