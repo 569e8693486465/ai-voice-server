@@ -10,67 +10,50 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-const PORT = process.env.PORT || 3001;
+// 🟢 Port (אתה יכול לשנות ל־3000 או 3001)
+const PORT = process.env.PORT || 3000;
 
-// ניקוי מוחלט של כל prefix שקשור ל-http/wss
-const rawDomain =
+// 🟢 הגדרת ה־DOMAIN — מנקה https:// אם קיים
+let DOMAIN =
   process.env.RENDER_EXTERNAL_URL ||
   process.env.BASE_URL ||
   "ai-voice-server-t4l5.onrender.com";
 
-const cleanDomain = rawDomain
-  .replace(/^https?:\/\//, "")
-  .replace(/^wss?:\/\//, "")
-  .replace(/\/$/, ""); // גם מסיר "/" בסוף אם יש
+DOMAIN = DOMAIN.replace(/^https?:\/\//, ""); // ✅ מנקה https:// או http://
 
-const WS_URL = `wss://${cleanDomain}/api/phone/ws`;
+const WS_URL = `wss://${DOMAIN}/api/phone/ws`;
 
-console.log("🧭 Using WebSocket URL:", WS_URL);
+const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const ELEVEN_VOICE_ID = "cTufqKY4lz94DWjU7clk";
 
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-if (!GOOGLE_API_KEY) {
-  console.error("❌ Missing GOOGLE_API_KEY in environment variables!");
-}
+if (!ELEVEN_API_KEY) console.error("❌ Missing ELEVEN_API_KEY!");
+if (!OPENAI_API_KEY) console.error("❌ Missing OPENAI_API_KEY!");
 
-const WELCOME_GREETING =
-  "היי יהלי יה גבר על חלל מה קורה";
-const SYSTEM_PROMPT = `
-You are a helpful and friendly voice assistant. This conversation is happening over a phone call.
-Follow these rules:
-1. Be concise and clear.
-2. Speak naturally.
-3. Avoid special characters or emojis.
-4. Keep your tone friendly and conversational.
-`;
-
-// ✅ Endpoint for Twilio to get TwiML
+// ✅ Twilio TwiML Endpoint
 app.post("/api/phone/twiml", (req, res) => {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <ConversationRelay 
-      url="${WS_URL}" 
-      welcomeGreeting="${WELCOME_GREETING}" 
-      ttsProvider="Google"
-      voice="en-US-Standard-C" 
-      language="en-US" />
-  </Connect>
-</Response>`;
-
-  console.log("📨 Sending TwiML:", xml);
+  <Response>
+    <Connect>
+      <ConversationRelay 
+        url="${WS_URL}" 
+        welcomeGreeting="שלום! אני העוזרת הקולית שלך. איך אפשר לעזור היום?"
+        ttsProvider="ElevenLabs"
+        voice="${ELEVEN_VOICE_ID}"
+      />
+    </Connect>
+  </Response>`;
   res.type("text/xml");
   res.send(xml);
 });
 
-// ✅ Store active sessions (in memory)
 const sessions = new Map();
 
-// ✅ WebSocket server for Twilio voice stream
+// ✅ WebSocket server
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on("connection", (ws) => {
   console.log("🔗 Twilio connected via WebSocket");
-
   let callSid = null;
 
   ws.on("message", async (raw) => {
@@ -79,66 +62,96 @@ wss.on("connection", (ws) => {
 
       if (msg.type === "setup") {
         callSid = msg.callSid;
-        console.log(`🟢 Setup for call: ${callSid}`);
+        console.log(`🟢 Setup for call ${callSid}`);
         sessions.set(callSid, []);
-      } else if (msg.type === "prompt") {
-        const userPrompt = msg.voicePrompt;
-        console.log(`🗣️ User said: ${userPrompt}`);
+      }
 
-        const history = sessions.get(callSid) || [];
-        history.push({ role: "user", parts: [{ text: userPrompt }] });
+      // 🎤 When Twilio streams user audio
+      else if (msg.type === "media" && msg.media?.payload) {
+        const audioBase64 = msg.media.payload;
+        const audioBuffer = Buffer.from(audioBase64, "base64");
 
-        const geminiResponse = await fetch(
-          "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+        // 1️⃣ Speech → Text (ElevenLabs STT)
+        const sttResponse = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+          method: "POST",
+          headers: {
+            "xi-api-key": ELEVEN_API_KEY,
+            "Content-Type": "audio/mpeg",
+          },
+          body: audioBuffer,
+        });
+
+        const sttData = await sttResponse.json();
+        const userText = sttData?.text || "";
+        console.log("🗣️ User said:", userText);
+
+        if (!userText) return;
+
+        // 2️⃣ Get reply from GPT-4o-mini
+        const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: userText }],
+          }),
+        });
+
+        const gptData = await gptResponse.json();
+        const reply = gptData?.choices?.[0]?.message?.content || "לא הבנתי אותך.";
+
+        console.log("🤖 GPT replied:", reply);
+
+        // 3️⃣ Text → Speech (ElevenLabs TTS)
+        const ttsResponse = await fetch(
+          `https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE_ID}`,
           {
             method: "POST",
             headers: {
+              "xi-api-key": ELEVEN_API_KEY,
               "Content-Type": "application/json",
-              Authorization: `Bearer ${GOOGLE_API_KEY}`,
             },
             body: JSON.stringify({
-              contents: [
-                { role: "system", parts: [{ text: SYSTEM_PROMPT }] },
-                ...history,
-              ],
+              text: reply,
+              model_id: "eleven_tts_v3",
+              voice_settings: { stability: 0.6, similarity_boost: 0.8 },
             }),
           }
         );
 
-        const data = await geminiResponse.json();
-        const reply =
-          data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-          "Sorry, I didn’t catch that.";
+        const audioReply = await ttsResponse.arrayBuffer();
+        const audioReplyBase64 = Buffer.from(audioReply).toString("base64");
 
-        console.log("🤖 Gemini replied:", reply);
-
-        history.push({ role: "model", parts: [{ text: reply }] });
-        sessions.set(callSid, history);
-
+        // 4️⃣ Send back audio reply to Twilio
         ws.send(
           JSON.stringify({
-            type: "text",
-            token: reply,
-            last: true,
+            type: "media",
+            media: { payload: audioReplyBase64 },
           })
         );
-      } else if (msg.type === "interrupt") {
-        console.log(`🚫 Call interrupted for ${callSid}`);
+      }
+
+      else if (msg.type === "close") {
+        console.log(`❌ Call ended ${callSid}`);
+        if (callSid) sessions.delete(callSid);
       }
     } catch (err) {
-      console.error("❌ Error handling message:", err);
+      console.error("❌ Error:", err);
     }
   });
 
   ws.on("close", () => {
-    console.log(`❌ Twilio disconnected: ${callSid}`);
+    console.log(`🔚 WebSocket closed for ${callSid}`);
     if (callSid) sessions.delete(callSid);
   });
 });
 
-// ✅ HTTP Upgrade for WebSocket
+// ✅ Handle HTTP → WebSocket upgrade
 const server = app.listen(PORT, () =>
-  console.log(`🚀 Server running on port ${PORT}`)
+  console.log(`🚀 Voice server running on port ${PORT} (domain: ${DOMAIN})`)
 );
 
 server.on("upgrade", (req, socket, head) => {
@@ -146,7 +159,5 @@ server.on("upgrade", (req, socket, head) => {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
     });
-  } else {
-    socket.destroy();
-  }
+  } else socket.destroy();
 });
