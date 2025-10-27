@@ -10,51 +10,49 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// 🟢 Port
-const PORT = process.env.PORT || 10000;
+// Port
+const PORT = process.env.PORT || 3000;
 
-// 🟢 Domain
+// Domain — מנקה https:// או http://
 let DOMAIN =
   process.env.RENDER_EXTERNAL_URL ||
   process.env.BASE_URL ||
   "ai-voice-server-t4l5.onrender.com";
 
-DOMAIN = DOMAIN.replace(/^https?:\/\//, ""); // מנקה https:// או http://
+DOMAIN = DOMAIN.replace(/^https?:\/\//, "");
 
 const WS_URL = `wss://${DOMAIN}/api/phone/ws`;
 
-// 🗝️ Keys + Voice
+// Keys + Voice IDs
 const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ELEVEN_VOICE_ID = process.env.ELEVEN_VOICE_ID || "cTufqKY4lz94DWjU7clk";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;   // מפתח Gemini
+const GEMINI_TTS_MODEL = "gemini-2.5-pro-preview-tts";
+const GEMINI_VOICE_ID = process.env.GEMINI_VOICE_ID || "zephyr";
 
 if (!ELEVEN_API_KEY) console.error("❌ Missing ELEVEN_API_KEY!");
 if (!OPENAI_API_KEY) console.error("❌ Missing OPENAI_API_KEY!");
+if (!GEMINI_API_KEY) console.error("❌ Missing GEMINI_API_KEY!");
 
-// ✅ Twilio TwiML Endpoint
+// TwiML Endpoint
 app.post("/api/phone/twiml", (req, res) => {
   console.log("📞 TwiML request received");
-
-  // XML עם welcomeGreeting (Twilio תשמיע אותו מיידית עם ElevenLabs)
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
   <Response>
     <Connect>
       <ConversationRelay 
-        url="${WS_URL}" 
-        welcomeGreeting="שלום! אני העוזרת הקולית שלך. איך אפשר לעזור היום?"
-        ttsProvider="ElevenLabs"
-        voice="${ELEVEN_VOICE_ID}"
+        url="${WS_URL}"
+        welcomeGreeting="Hello! I’m your AI voice assistant powered by Gemini."
+        ttsProvider="Google"
+        voice="${GEMINI_VOICE_ID}"
       />
     </Connect>
   </Response>`;
-
   res.type("text/xml");
   res.send(xml);
 });
 
 const sessions = new Map();
-
-// ✅ WebSocket Server
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on("connection", (ws) => {
@@ -70,29 +68,29 @@ wss.on("connection", (ws) => {
         console.log(`🟢 Setup for call ${callSid}`);
         sessions.set(callSid, []);
       }
-
-      // 🎤 כשהמשתמש מדבר
       else if (msg.type === "media" && msg.media?.payload) {
         const audioBase64 = msg.media.payload;
         const audioBuffer = Buffer.from(audioBase64, "base64");
 
-        // 1️⃣ Speech → Text (ElevenLabs STT)
-        const sttResponse = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
-          method: "POST",
-          headers: {
-            "xi-api-key": ELEVEN_API_KEY,
-            "Content-Type": "audio/mpeg",
-          },
-          body: audioBuffer,
-        });
+        // 1️⃣ STT with ElevenLabs
+        const sttResponse = await fetch(
+          "https://api.elevenlabs.io/v1/speech-to-text",
+          {
+            method: "POST",
+            headers: {
+              "xi-api-key": ELEVEN_API_KEY,
+              "Content-Type": "audio/mpeg",
+            },
+            body: audioBuffer,
+          }
+        );
 
         const sttData = await sttResponse.json();
         const userText = sttData?.text || "";
         console.log("🗣️ User said:", userText);
-
         if (!userText) return;
 
-        // 2️⃣ GPT-4o-mini — יצירת תשובה
+        // 2️⃣ GPT-4o mini reply (OpenAI)
         const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
@@ -104,42 +102,40 @@ wss.on("connection", (ws) => {
             messages: [{ role: "user", content: userText }],
           }),
         });
-
         const gptData = await gptResponse.json();
-        const reply = gptData?.choices?.[0]?.message?.content || "לא הבנתי אותך.";
-
+        const reply = gptData?.choices?.[0]?.message?.content || "Sorry, I didn’t catch that.";
         console.log("🤖 GPT replied:", reply);
 
-        // 3️⃣ Text → Speech (ElevenLabs TTS)
+        // 3️⃣ TTS with Gemini
         const ttsResponse = await fetch(
-          `https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE_ID}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS_MODEL}:generateSpeech?key=${GEMINI_API_KEY}`,
           {
             method: "POST",
             headers: {
-              "xi-api-key": ELEVEN_API_KEY,
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
               text: reply,
-              model_id: "eleven_tts_v3",
-              voice_settings: { stability: 0.6, similarity_boost: 0.8 },
+              audioConfig: {
+                voice: {
+                  name: GEMINI_VOICE_ID
+                }
+              },
+              responseModality: "audio"
             }),
           }
         );
+        const audioReplyArrayBuffer = await ttsResponse.arrayBuffer();
+        const audioReplyBase64 = Buffer.from(audioReplyArrayBuffer).toString("base64");
 
-        const audioReply = await ttsResponse.arrayBuffer();
-        const audioReplyBase64 = Buffer.from(audioReply).toString("base64");
-
-        // 4️⃣ שליחה חזרה לטוויליו
+        // 4️⃣ Send back audio
         ws.send(
           JSON.stringify({
             type: "media",
-            media: { payload: audioReplyBase64 },
+            media: { payload: audioReplyBase64 }
           })
         );
       }
-
-      // 🔴 סגירת שיחה
       else if (msg.type === "close") {
         console.log(`❌ Call ended ${callSid}`);
         if (callSid) sessions.delete(callSid);
@@ -155,7 +151,7 @@ wss.on("connection", (ws) => {
   });
 });
 
-// ✅ Handle HTTP → WS Upgrade
+// HTTP → WS Upgrade
 const server = app.listen(PORT, () =>
   console.log(`🚀 Voice server running on port ${PORT} (domain: ${DOMAIN})`)
 );
