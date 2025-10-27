@@ -11,23 +11,14 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 3001;
-
-// ניקוי מוחלט של כל prefix שקשור ל-http/wss
-const rawDomain =
+const DOMAIN =
   process.env.RENDER_EXTERNAL_URL ||
   process.env.BASE_URL ||
   "ai-voice-server-t4l5.onrender.com";
 
-const cleanDomain = rawDomain
-  .replace(/^https?:\/\//, "")
-  .replace(/^wss?:\/\//, "")
-  .replace(/\/$/, ""); // גם מסיר "/" בסוף אם יש
-
-const WS_URL = `wss://${cleanDomain}/api/phone/ws`;
-
-console.log("🧭 Using WebSocket URL:", WS_URL);
-
+const WS_URL = `wss://${DOMAIN}/api/phone/ws`;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+
 if (!GOOGLE_API_KEY) {
   console.error("❌ Missing GOOGLE_API_KEY in environment variables!");
 }
@@ -43,7 +34,7 @@ Follow these rules:
 4. Keep your tone friendly and conversational.
 `;
 
-// ✅ Endpoint for Twilio to get TwiML
+// ✅ Twilio asks this endpoint for TwiML to know where to connect
 app.post("/api/phone/twiml", (req, res) => {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -56,16 +47,14 @@ app.post("/api/phone/twiml", (req, res) => {
       language="en-US" />
   </Connect>
 </Response>`;
-
-  console.log("📨 Sending TwiML:", xml);
   res.type("text/xml");
   res.send(xml);
 });
 
-// ✅ Store active sessions (in memory)
+// ✅ Store conversation history (in memory)
 const sessions = new Map();
 
-// ✅ WebSocket server for Twilio voice stream
+// ✅ WebSocket server for real-time voice communication
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on("connection", (ws) => {
@@ -81,20 +70,22 @@ wss.on("connection", (ws) => {
         callSid = msg.callSid;
         console.log(`🟢 Setup for call: ${callSid}`);
         sessions.set(callSid, []);
-      } else if (msg.type === "prompt") {
+      }
+
+      else if (msg.type === "prompt") {
         const userPrompt = msg.voicePrompt;
         console.log(`🗣️ User said: ${userPrompt}`);
 
         const history = sessions.get(callSid) || [];
         history.push({ role: "user", parts: [{ text: userPrompt }] });
 
+        // ✅ Correct Gemini API call using ?key=
         const geminiResponse = await fetch(
-          "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GOOGLE_API_KEY}`,
           {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${GOOGLE_API_KEY}`,
             },
             body: JSON.stringify({
               contents: [
@@ -106,6 +97,8 @@ wss.on("connection", (ws) => {
         );
 
         const data = await geminiResponse.json();
+        console.log("🧠 Gemini full response:", JSON.stringify(data, null, 2));
+
         const reply =
           data?.candidates?.[0]?.content?.parts?.[0]?.text ||
           "Sorry, I didn’t catch that.";
@@ -122,7 +115,9 @@ wss.on("connection", (ws) => {
             last: true,
           })
         );
-      } else if (msg.type === "interrupt") {
+      }
+
+      else if (msg.type === "interrupt") {
         console.log(`🚫 Call interrupted for ${callSid}`);
       }
     } catch (err) {
@@ -136,7 +131,7 @@ wss.on("connection", (ws) => {
   });
 });
 
-// ✅ HTTP Upgrade for WebSocket
+// ✅ Handle upgrade to WebSocket
 const server = app.listen(PORT, () =>
   console.log(`🚀 Server running on port ${PORT}`)
 );
