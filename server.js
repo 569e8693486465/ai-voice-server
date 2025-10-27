@@ -1,10 +1,8 @@
 import express from "express";
-import bodyParser from "body-parser";
-import dotenv from "dotenv";
-import fetch from "node-fetch";
 import { WebSocketServer } from "ws";
-import fs from "fs";
-import FormData from "form-data";
+import dotenv from "dotenv";
+import bodyParser from "body-parser";
+import fetch from "node-fetch";
 
 dotenv.config();
 
@@ -12,143 +10,153 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-const PORT = process.env.PORT || 3001;
+// 🟢 Port set to 3000 for compatibility with Next.js / Render
+const PORT = process.env.PORT || 3000;
+
 const DOMAIN =
   process.env.RENDER_EXTERNAL_URL ||
   process.env.BASE_URL ||
   "ai-voice-server-t4l5.onrender.com";
 
 const WS_URL = `wss://${DOMAIN}/api/phone/ws`;
+
 const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const ELEVEN_VOICE_ID = "cTufqKY4lz94DWjU7clk";
 
-if (!ELEVEN_API_KEY || !OPENAI_API_KEY) {
-  console.error("❌ Missing ELEVEN_API_KEY or OPENAI_API_KEY in .env file");
-  process.exit(1);
-}
+if (!ELEVEN_API_KEY) console.error("❌ Missing ELEVEN_API_KEY!");
+if (!OPENAI_API_KEY) console.error("❌ Missing OPENAI_API_KEY!");
 
-// voice ID לשימוש ב־ElevenLabs TTS
-const VOICE_ID = "cTufqKY4lz94DWjU7clk";
-
-// ✅ Twilio יקבל את ה־TwiML כדי לדעת לאן לחבר את השיחה
+// ✅ Twilio connects here to get TwiML
 app.post("/api/phone/twiml", (req, res) => {
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <ConversationRelay 
-      url="${WS_URL}" 
-      welcomeGreeting="שלום! אני העוזרת הקולית שלך. איך אפשר לעזור?"
-      ttsProvider="none" />
-  </Connect>
-</Response>`;
+  <Response>
+    <Connect>
+      <ConversationRelay 
+        url="${WS_URL}" 
+        welcomeGreeting="שלום! אני העוזרת הקולית שלך. איך אפשר לעזור היום?"
+        ttsProvider="ElevenLabs"
+        voice="${ELEVEN_VOICE_ID}"
+      />
+    </Connect>
+  </Response>`;
   res.type("text/xml");
   res.send(xml);
 });
 
-// ✅ נשתמש ב־WebSocket לקבלת אודיו בזמן אמת מטוויליו
+const sessions = new Map();
+
+// ✅ WebSocket server
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on("connection", (ws) => {
   console.log("🔗 Twilio connected via WebSocket");
+  let callSid = null;
 
   ws.on("message", async (raw) => {
-    const msg = JSON.parse(raw.toString());
+    try {
+      const msg = JSON.parse(raw.toString());
 
-    if (msg.type === "setup") {
-      console.log(`🟢 Call setup: ${msg.callSid}`);
-    }
-
-    // כשהיוזר מדבר
-    else if (msg.type === "prompt") {
-      const audioBase64 = msg.audio || msg.voicePrompt;
-      console.log("🎤 Received audio from user");
-
-      if (!audioBase64) {
-        console.error("❌ No audio data received.");
-        return;
+      if (msg.type === "setup") {
+        callSid = msg.callSid;
+        console.log(`🟢 Setup for call ${callSid}`);
+        sessions.set(callSid, []);
       }
 
-      // המרת הבייס64 לקובץ זמני
-      const buffer = Buffer.from(audioBase64, "base64");
-      fs.writeFileSync("input.wav", buffer);
+      // When user speaks
+      else if (msg.type === "media" && msg.media?.payload) {
+        const audioBase64 = msg.media.payload;
+        const audioBuffer = Buffer.from(audioBase64, "base64");
 
-      // 🎧 שליחה ל־ElevenLabs STT
-      const formData = new FormData();
-      formData.append("file", fs.createReadStream("input.wav"));
+        // 1️⃣ Convert speech → text via ElevenLabs STT
+        const sttResponse = await fetch(
+          "https://api.elevenlabs.io/v1/speech-to-text",
+          {
+            method: "POST",
+            headers: {
+              "xi-api-key": ELEVEN_API_KEY,
+              "Content-Type": "audio/mpeg",
+            },
+            body: audioBuffer,
+          }
+        );
 
-      const sttResponse = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
-        method: "POST",
-        headers: { "xi-api-key": ELEVEN_API_KEY },
-        body: formData,
-      });
+        const sttData = await sttResponse.json();
+        const userText = sttData?.text || "";
+        console.log("🗣️ User said:", userText);
 
-      const sttData = await sttResponse.json();
-      const userText = sttData?.text || "";
-      console.log("🗣️ Transcribed:", userText);
+        if (!userText) return;
 
-      // שליחה ל־GPT-4o-mini
-      const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            { role: "system", content: "את עוזרת קולית ידידותית שעונה בעברית בצורה טבעית וברורה." },
-            { role: "user", content: userText },
-          ],
-        }),
-      });
-
-      const gptData = await gptResponse.json();
-      const reply = gptData?.choices?.[0]?.message?.content || "לא הבנתי אותך, תוכל לחזור שוב?";
-      console.log("🤖 GPT replied:", reply);
-
-      // שליחה ל־ElevenLabs TTS (עברית)
-      const ttsResponse = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`,
-        {
+        // 2️⃣ Get reply from GPT-4o mini
+        const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
-            "xi-api-key": ELEVEN_API_KEY,
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            text: reply,
-            model_id: "eleven_multilingual_v3",
-            voice_settings: { stability: 0.4, similarity_boost: 0.8 },
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: userText }],
           }),
-        }
-      );
+        });
 
-      const audioBuffer = Buffer.from(await ttsResponse.arrayBuffer());
-      const audioBase64Reply = audioBuffer.toString("base64");
+        const gptData = await gptResponse.json();
+        const reply = gptData?.choices?.[0]?.message?.content || "לא הבנתי אותך.";
 
-      // שליחה בחזרה ל־Twilio (שישמיע את זה)
-      ws.send(
-        JSON.stringify({
-          type: "audio",
-          audio: audioBase64Reply,
-          last: true,
-        })
-      );
+        console.log("🤖 GPT replied:", reply);
 
-      console.log("🔊 Sent audio reply back to Twilio");
+        // 3️⃣ Convert reply → speech via ElevenLabs TTS
+        const ttsResponse = await fetch(
+          `https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE_ID}`,
+          {
+            method: "POST",
+            headers: {
+              "xi-api-key": ELEVEN_API_KEY,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              text: reply,
+              model_id: "eleven_tts_v3",
+              voice_settings: { stability: 0.6, similarity_boost: 0.8 },
+            }),
+          }
+        );
+
+        const audioReply = await ttsResponse.arrayBuffer();
+        const audioReplyBase64 = Buffer.from(audioReply).toString("base64");
+
+        // 4️⃣ Send back as audio
+        ws.send(
+          JSON.stringify({
+            type: "media",
+            media: { payload: audioReplyBase64 },
+          })
+        );
+      }
+
+      else if (msg.type === "close") {
+        console.log(`❌ Call ended ${callSid}`);
+        if (callSid) sessions.delete(callSid);
+      }
+    } catch (err) {
+      console.error("❌ Error:", err);
     }
   });
 
-  ws.on("close", () => console.log("❌ Twilio disconnected"));
+  ws.on("close", () => {
+    console.log(`🔚 WebSocket closed for ${callSid}`);
+    if (callSid) sessions.delete(callSid);
+  });
 });
 
-// ✅ הפעלת השרת
-const server = app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+const server = app.listen(PORT, () =>
+  console.log(`🚀 Voice server running on port ${PORT}`)
+);
 
 server.on("upgrade", (req, socket, head) => {
   if (req.url === "/api/phone/ws") {
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
-  } else {
-    socket.destroy();
-  }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
+  } else socket.destroy();
 });
