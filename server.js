@@ -33,7 +33,7 @@ if (!GOOGLE_API_KEY) {
 }
 
 const WELCOME_GREETING =
-  "Hi! I am a voice assistant powered by Twilio and Google Gemini. Ask me anything!";
+  "היי יהלי יה גבר על חלל מה קורה";
 const SYSTEM_PROMPT = `
 You are a helpful and friendly voice assistant. This conversation is happening over a phone call.
 Follow these rules:
