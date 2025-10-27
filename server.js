@@ -116,7 +116,7 @@ wss.on("connection", (ws) => {
             },
             body: JSON.stringify({
               text: reply,
-              model_id: "eleven_tts_v3",
+              model_id: "eleven_v3",
               voice_settings: { stability: 0.6, similarity_boost: 0.8 },
             }),
           }
