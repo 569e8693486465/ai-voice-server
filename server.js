@@ -41,7 +41,7 @@ app.post("/api/phone/twiml", (req, res) => {
       url="${WS_URL}"
       welcomeGreeting="Hi there! I'm your AI voice assistant. How can I help you today?"
       ttsProvider="ElevenLabs"
-      voice="${ELEVEN_VOICE_ID}-turbo_v2_5-0.8_0.8_0.6" />
+      voice="${ELEVEN_VOICE_ID}-eleven_v3-0.8_0.8_0.6" />
   </Connect>
 </Response>`;
   res.type("text/xml").send(xmlResponse);
@@ -84,17 +84,21 @@ wss.on("connection", (ws) => {
           },
           body: JSON.stringify({
             model: "gpt-4o-mini",
-            messages: [{ role: "system", content: "You are a concise, friendly voice AI." },
-                       { role: "user", content: userText }],
+            messages: [
+              { role: "system", content: "You are a concise, friendly voice AI." },
+              { role: "user", content: userText },
+            ],
           }),
         });
 
         const gptData = await gptResponse.json();
-        const reply = gptData?.choices?.[0]?.message?.content || "Sorry, I didn't catch that.";
+        const reply =
+          gptData?.choices?.[0]?.message?.content ||
+          "Sorry, I didn't catch that.";
 
         console.log("🤖 GPT replied:", reply);
 
-        // 🗣️ Send the reply text back to Twilio (it’ll be spoken with ElevenLabs TTS)
+        // 🗣️ Send the reply text back to Twilio (spoken with ElevenLabs TTS)
         ws.send(
           JSON.stringify({
             type: "text",
