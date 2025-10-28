@@ -15,7 +15,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 8080;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 
@@ -32,35 +32,37 @@ fs.mkdirSync(audioDir, { recursive: true });
 app.use("/audio", express.static(audioDir));
 
 /**
- * 🗣️ Generate Gemini TTS file safely
+ * 🗣️ Generate ElevenLabs TTS file
  */
-async function generateGeminiAudio(text, filename = `tts_${Date.now()}.mp3`) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-tts:generateSpeech?key=${GEMINI_API_KEY}`;
+async function generateElevenAudio(text, filename = `tts_${Date.now()}.mp3`) {
+  const voiceId = "-UgBBYS2sOqTuMpoF3BR0";
+  const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
 
   const resp = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "xi-api-key": ELEVEN_API_KEY,
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
+      model_id: "eleven_v3",
       text,
-      voice: { name: "zephyr" },
-      audioConfig: { audioEncoding: "MP3" },
+      voice_settings: {
+        stability: 0.5,
+        similarity_boost: 0.8,
+      },
     }),
   });
 
   if (!resp.ok) {
     const errorText = await resp.text();
-    throw new Error(`Gemini TTS HTTP ${resp.status}: ${errorText}`);
+    throw new Error(`ElevenLabs TTS HTTP ${resp.status}: ${errorText}`);
   }
 
-  const data = await resp.json();
-
-  if (!data.audioContent) {
-    console.error("⚠️ Gemini TTS response missing audioContent:", data);
-    throw new Error("Gemini TTS failed to generate audio");
-  }
-
+  const arrayBuffer = await resp.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
   const filePath = path.join(audioDir, filename);
-  fs.writeFileSync(filePath, Buffer.from(data.audioContent, "base64"));
+  fs.writeFileSync(filePath, buffer);
   return `${BASE_URL}/audio/${filename}`;
 }
 
@@ -70,7 +72,7 @@ async function generateGeminiAudio(text, filename = `tts_${Date.now()}.mp3`) {
 app.post("/api/phone/twiml", async (req, res) => {
   try {
     const greetingText = "שלום! אני העוזרת הקולית שלך. אני מאזינה עכשיו...";
-    const greetingUrl = await generateGeminiAudio(greetingText, "greeting.mp3");
+    const greetingUrl = await generateElevenAudio(greetingText, "greeting.mp3");
 
     const WS_URL = `wss://ai-voice-server-t4l5.onrender.com/media`;
 
@@ -130,7 +132,7 @@ wss.on("connection", (ws, req) => {
 });
 
 /**
- * 🔁 Process speech → GPT → Gemini → play back
+ * 🔁 Process speech → GPT → TTS → play back
  */
 async function processConversationLoop(callSid) {
   const session = sessions[callSid];
@@ -173,17 +175,19 @@ async function processConversationLoop(callSid) {
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "אתה עוזר קולי נחמד שמדבר עברית קצר וברור." },
+        { role: "system", content: "אתה עוזר קולי נחמד שמדבר בעברית קצר וברור." },
         { role: "user", content: userText },
       ],
     }),
   });
+
   const gptData = await gptResp.json();
-  const replyText = gptData.choices?.[0]?.message?.content?.trim() || "לא הצלחתי להבין.";
+  const replyText =
+    gptData.choices?.[0]?.message?.content?.trim() || "לא הצלחתי להבין.";
   console.log("🤖 GPT replied:", replyText);
 
-  // 3️⃣ Gemini TTS
-  const replyUrl = await generateGeminiAudio(replyText);
+  // 3️⃣ ElevenLabs TTS
+  const replyUrl = await generateElevenAudio(replyText);
 
   // 4️⃣ Play reply
   try {
@@ -221,6 +225,8 @@ const server = app.listen(PORT, () => {
 
 server.on("upgrade", (req, socket, head) => {
   if (req.url === "/media") {
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    wss.handleUpgrade(req, socket, head, (ws) =>
+      wss.emit("connection", ws, req)
+    );
   } else socket.destroy();
 });
