@@ -20,11 +20,11 @@ DOMAIN = DOMAIN.replace(/^https?:\/\//, ""); // clean https://
 // WebSocket URL for Twilio ConversationRelay
 const WS_URL = `wss://${DOMAIN}/ws`;
 
-const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ELEVEN_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"; // ← your ElevenLabs voice ID
+const ELEVENLABS_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"; // ← your ElevenLabs voice ID
 
-if (!ELEVEN_API_KEY) console.error("❌ Missing ELEVEN_API_KEY!");
+if (!ELEVEN_API_KEY) console.error("❌ Missing ELEVENLABS_API_KEY!");
 if (!OPENAI_API_KEY) console.error("❌ Missing OPENAI_API_KEY!");
 
 // --- Express setup ---
@@ -41,7 +41,7 @@ app.post("/api/phone/twiml", (req, res) => {
       url="${WS_URL}"
       welcomeGreeting="Hi there! I'm your AI voice assistant. How can I help you today?"
       ttsProvider="ElevenLabs"
-      voice="${ELEVEN_VOICE_ID}-turbo_v2_5-0.8_0.8_0.6" />
+      voice="${ElevenLabs_VOICE_ID}-turbo_v2_5-0.8_0.8_0.6" />
   </Connect>
 </Response>`;
   res.type("text/xml").send(xmlResponse);
