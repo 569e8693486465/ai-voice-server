@@ -32,24 +32,32 @@ fs.mkdirSync(audioDir, { recursive: true });
 app.use("/audio", express.static(audioDir));
 
 /**
- * 🗣️ Generate Gemini TTS file and return public URL
+ * 🗣️ Generate Gemini TTS file safely
  */
 async function generateGeminiAudio(text, filename = `tts_${Date.now()}.mp3`) {
-  const resp = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-tts:generateSpeech?key=${GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        input: { text },
-        voice: { name: "zephyr" },
-        audioConfig: { audioEncoding: "MP3" },
-      }),
-    }
-  );
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-tts:generateSpeech?key=${GEMINI_API_KEY}`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      voice: { name: "zephyr" },
+      audioConfig: { audioEncoding: "MP3" },
+    }),
+  });
+
+  if (!resp.ok) {
+    const errorText = await resp.text();
+    throw new Error(`Gemini TTS HTTP ${resp.status}: ${errorText}`);
+  }
 
   const data = await resp.json();
-  if (!data.audioContent) throw new Error("Gemini TTS failed");
+
+  if (!data.audioContent) {
+    console.error("⚠️ Gemini TTS response missing audioContent:", data);
+    throw new Error("Gemini TTS failed to generate audio");
+  }
 
   const filePath = path.join(audioDir, filename);
   fs.writeFileSync(filePath, Buffer.from(data.audioContent, "base64"));
@@ -57,11 +65,10 @@ async function generateGeminiAudio(text, filename = `tts_${Date.now()}.mp3`) {
 }
 
 /**
- * 📞 Initial TwiML endpoint – greet using Gemini voice
+ * 📞 Twilio TwiML endpoint
  */
 app.post("/api/phone/twiml", async (req, res) => {
   try {
-    // create greeting mp3 using Gemini
     const greetingText = "שלום! אני העוזרת הקולית שלך. אני מאזינה עכשיו...";
     const greetingUrl = await generateGeminiAudio(greetingText, "greeting.mp3");
 
@@ -77,7 +84,7 @@ app.post("/api/phone/twiml", async (req, res) => {
 
     res.type("text/xml").send(xmlResponse);
   } catch (err) {
-    console.error("❌ Error creating greeting:", err);
+    console.error("❌ Error creating greeting:", err.message);
     res
       .status(500)
       .type("text/xml")
@@ -86,7 +93,7 @@ app.post("/api/phone/twiml", async (req, res) => {
 });
 
 /**
- * 🔗 WebSocket handler for Twilio Media Stream
+ * 🔗 WebSocket for Twilio Media Stream
  */
 const wss = new WebSocketServer({ noServer: true });
 const sessions = {};
@@ -123,7 +130,7 @@ wss.on("connection", (ws, req) => {
 });
 
 /**
- * 🔁 Process user speech → Whisper → GPT → Gemini → play back
+ * 🔁 Process speech → GPT → Gemini → play back
  */
 async function processConversationLoop(callSid) {
   const session = sessions[callSid];
@@ -156,7 +163,7 @@ async function processConversationLoop(callSid) {
     return;
   }
 
-  // 2️⃣ GPT reply
+  // 2️⃣ GPT response
   const gptResp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -178,7 +185,7 @@ async function processConversationLoop(callSid) {
   // 3️⃣ Gemini TTS
   const replyUrl = await generateGeminiAudio(replyText);
 
-  // 4️⃣ Play via Twilio redirect
+  // 4️⃣ Play reply
   try {
     await client.calls(callSid).update({
       method: "POST",
@@ -193,7 +200,7 @@ async function processConversationLoop(callSid) {
 }
 
 /**
- * 🎵 TwiML endpoint to play generated audio and reconnect
+ * 🎵 TwiML endpoint for playback + reconnect
  */
 app.post("/api/play", (req, res) => {
   const { url } = req.query;
@@ -206,17 +213,14 @@ app.post("/api/play", (req, res) => {
 });
 
 /**
- * 🚀 Server setup
+ * 🚀 Start server
  */
 const server = app.listen(PORT, () => {
-  console.log(`🚀 Server running on ${PORT}`);
-  console.log(`📞 TwiML endpoint: ${BASE_URL}/api/phone/twiml`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
 
 server.on("upgrade", (req, socket, head) => {
   if (req.url === "/media") {
-    wss.handleUpgrade(req, socket, head, (ws) =>
-      wss.emit("connection", ws, req)
-    );
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   } else socket.destroy();
 });
