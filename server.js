@@ -6,50 +6,51 @@ import fetch from "node-fetch";
 
 dotenv.config();
 
-const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+// --- Configuration ---
+const PORT = process.env.PORT || 8080;
 
-// 🟢 Port (אתה יכול לשנות ל־3000 או 3001)
-const PORT = process.env.PORT || 3000;
-
-// 🟢 הגדרת ה־DOMAIN — מנקה https:// אם קיים
+// ⚙️ Your Render domain — example: ai-voice-server.onrender.com
 let DOMAIN =
   process.env.RENDER_EXTERNAL_URL ||
   process.env.BASE_URL ||
-  "ai-voice-server-t4l5.onrender.com";
+  "ai-voice-server.onrender.com";
 
-DOMAIN = DOMAIN.replace(/^https?:\/\//, ""); // ✅ מנקה https:// או http://
+DOMAIN = DOMAIN.replace(/^https?:\/\//, ""); // clean https://
 
-const WS_URL = `wss://${DOMAIN}/api/phone/ws`;
+// WebSocket URL for Twilio ConversationRelay
+const WS_URL = `wss://${DOMAIN}/ws`;
 
 const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ELEVEN_VOICE_ID = "cTufqKY4lz94DWjU7clk";
+const ELEVEN_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"; // ← your ElevenLabs voice ID
 
 if (!ELEVEN_API_KEY) console.error("❌ Missing ELEVEN_API_KEY!");
 if (!OPENAI_API_KEY) console.error("❌ Missing OPENAI_API_KEY!");
 
-// ✅ Twilio TwiML Endpoint
+// --- Express setup ---
+const app = express();
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+
+// --- Twilio TwiML endpoint ---
 app.post("/api/phone/twiml", (req, res) => {
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
-  <Response>
-    <Connect>
-      <ConversationRelay 
-        url="${WS_URL}" 
-        welcomeGreeting="שלום! אני העוזרת הקולית שלך. איך אפשר לעזור היום?"
-        ttsProvider="ElevenLabs"
-        voice="${ELEVEN_VOICE_ID}"
-      />
-    </Connect>
-  </Response>`;
-  res.type("text/xml");
-  res.send(xml);
+  const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <ConversationRelay
+      url="${WS_URL}"
+      welcomeGreeting="Hi there! I'm your AI voice assistant. How can I help you today?"
+      ttsProvider="ElevenLabs"
+      voice="${ELEVEN_VOICE_ID}-turbo_v2_5-0.8_0.8_0.6" />
+  </Connect>
+</Response>`;
+  res.type("text/xml").send(xmlResponse);
 });
 
+// --- Sessions store ---
 const sessions = new Map();
 
-// ✅ WebSocket server
+// --- WebSocket server ---
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on("connection", (ws) => {
@@ -60,34 +61,21 @@ wss.on("connection", (ws) => {
     try {
       const msg = JSON.parse(raw.toString());
 
+      // 🟢 Setup event
       if (msg.type === "setup") {
         callSid = msg.callSid;
         console.log(`🟢 Setup for call ${callSid}`);
         sessions.set(callSid, []);
       }
 
-      // 🎤 When Twilio streams user audio
-      else if (msg.type === "media" && msg.media?.payload) {
-        const audioBase64 = msg.media.payload;
-        const audioBuffer = Buffer.from(audioBase64, "base64");
-
-        // 1️⃣ Speech → Text (ElevenLabs STT)
-        const sttResponse = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
-          method: "POST",
-          headers: {
-            "xi-api-key": ELEVEN_API_KEY,
-            "Content-Type": "audio/mpeg",
-          },
-          body: audioBuffer,
-        });
-
-        const sttData = await sttResponse.json();
-        const userText = sttData?.text || "";
-        console.log("🗣️ User said:", userText);
-
+      // 🎤 When Twilio sends a recognized voice prompt
+      else if (msg.type === "prompt") {
+        const userText = msg.voicePrompt?.trim();
         if (!userText) return;
 
-        // 2️⃣ Get reply from GPT-4o-mini
+        console.log(`🗣️ User said: ${userText}`);
+
+        // 🤖 Generate a response via GPT-4o-mini
         const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
@@ -96,42 +84,28 @@ wss.on("connection", (ws) => {
           },
           body: JSON.stringify({
             model: "gpt-4o-mini",
-            messages: [{ role: "user", content: userText }],
+            messages: [{ role: "system", content: "You are a concise, friendly voice AI." },
+                       { role: "user", content: userText }],
           }),
         });
 
         const gptData = await gptResponse.json();
-        const reply = gptData?.choices?.[0]?.message?.content || "לא הבנתי אותך.";
+        const reply = gptData?.choices?.[0]?.message?.content || "Sorry, I didn't catch that.";
 
         console.log("🤖 GPT replied:", reply);
 
-        // 3️⃣ Text → Speech (ElevenLabs TTS)
-        const ttsResponse = await fetch(
-          `https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE_ID}`,
-          {
-            method: "POST",
-            headers: {
-              "xi-api-key": ELEVEN_API_KEY,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              text: reply,
-              model_id: "eleven_v3",
-              voice_settings: { stability: 0.6, similarity_boost: 0.8 },
-            }),
-          }
-        );
-
-        const audioReply = await ttsResponse.arrayBuffer();
-        const audioReplyBase64 = Buffer.from(audioReply).toString("base64");
-
-        // 4️⃣ Send back audio reply to Twilio
+        // 🗣️ Send the reply text back to Twilio (it’ll be spoken with ElevenLabs TTS)
         ws.send(
           JSON.stringify({
-            type: "media",
-            media: { payload: audioReplyBase64 },
+            type: "text",
+            token: reply,
+            last: true,
           })
         );
+      }
+
+      else if (msg.type === "interrupt") {
+        console.log(`⚠️ Interruption received for call ${callSid}`);
       }
 
       else if (msg.type === "close") {
@@ -149,13 +123,14 @@ wss.on("connection", (ws) => {
   });
 });
 
-// ✅ Handle HTTP → WebSocket upgrade
-const server = app.listen(PORT, () =>
-  console.log(`🚀 Voice server running on port ${PORT} (domain: ${DOMAIN})`)
-);
+// --- HTTP server + WebSocket upgrade ---
+const server = app.listen(PORT, () => {
+  console.log(`🚀 Voice server running on port ${PORT}`);
+  console.log(`🌐 WebSocket URL for Twilio: ${WS_URL}`);
+});
 
 server.on("upgrade", (req, socket, head) => {
-  if (req.url === "/api/phone/ws") {
+  if (req.url === "/ws") {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
     });
