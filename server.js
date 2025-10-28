@@ -19,41 +19,81 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 
-// ✅ כתובת בסיס של השרת ב־Render
 const BASE_URL = "https://ai-voice-server-t4l5.onrender.com";
-
-const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
-
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-// 📂 הגשת קבצי האודיו לציבור
-app.use("/audio", express.static(path.join(__dirname, "public/audio")));
+const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-// 📞 TwiML ראשוני — השלב הראשון של השיחה
-app.post("/api/phone/twiml", (req, res) => {
-  const WS_URL = `wss://ai-voice-server-t4l5.onrender.com/media`;
-  const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+// 🎧 public folder for audio files
+const audioDir = path.join(__dirname, "public/audio");
+fs.mkdirSync(audioDir, { recursive: true });
+app.use("/audio", express.static(audioDir));
+
+/**
+ * 🗣️ Generate Gemini TTS file and return public URL
+ */
+async function generateGeminiAudio(text, filename = `tts_${Date.now()}.mp3`) {
+  const resp = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-tts:generateSpeech?key=${GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input: { text },
+        voice: { name: "zephyr" },
+        audioConfig: { audioEncoding: "MP3" },
+      }),
+    }
+  );
+
+  const data = await resp.json();
+  if (!data.audioContent) throw new Error("Gemini TTS failed");
+
+  const filePath = path.join(audioDir, filename);
+  fs.writeFileSync(filePath, Buffer.from(data.audioContent, "base64"));
+  return `${BASE_URL}/audio/${filename}`;
+}
+
+/**
+ * 📞 Initial TwiML endpoint – greet using Gemini voice
+ */
+app.post("/api/phone/twiml", async (req, res) => {
+  try {
+    // create greeting mp3 using Gemini
+    const greetingText = "שלום! אני העוזרת הקולית שלך. אני מאזינה עכשיו...";
+    const greetingUrl = await generateGeminiAudio(greetingText, "greeting.mp3");
+
+    const WS_URL = `wss://ai-voice-server-t4l5.onrender.com/media`;
+
+    const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="he-IL" voice="Polly-Dalia">שלום! אני העוזרת הקולית שלך. אני מאזינה עכשיו...</Say>
+  <Play>${greetingUrl}</Play>
   <Connect>
     <Stream url="${WS_URL}" />
   </Connect>
 </Response>`;
-  res.type("text/xml").send(xmlResponse);
+
+    res.type("text/xml").send(xmlResponse);
+  } catch (err) {
+    console.error("❌ Error creating greeting:", err);
+    res
+      .status(500)
+      .type("text/xml")
+      .send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+  }
 });
 
-// 🧠 WebSocket Server — תקשורת עם Twilio Media Stream
+/**
+ * 🔗 WebSocket handler for Twilio Media Stream
+ */
 const wss = new WebSocketServer({ noServer: true });
-
-// נשמור מצב לפי כל callSid כדי לאפשר לולאה
 const sessions = {};
 
 wss.on("connection", (ws, req) => {
-  console.log("🔗 WebSocket connected");
+  console.log("🔗 Twilio Media Stream connected");
   let callSid = null;
-  let audioChunks = [];
 
   ws.on("message", async (raw) => {
     try {
@@ -75,14 +115,16 @@ wss.on("connection", (ws, req) => {
         await processConversationLoop(callSid);
       }
     } catch (err) {
-      console.error("❌ WebSocket error:", err);
+      console.error("❌ WS error:", err);
     }
   });
 
   ws.on("close", () => console.log("🔚 WS closed"));
 });
 
-// 🔁 פונקציה שמטפלת בלולאת השיחה
+/**
+ * 🔁 Process user speech → Whisper → GPT → Gemini → play back
+ */
 async function processConversationLoop(callSid) {
   const session = sessions[callSid];
   if (!session) return;
@@ -94,7 +136,7 @@ async function processConversationLoop(callSid) {
 
   console.log("🎙️ Processing audio for call:", callSid);
 
-  // --- 1️⃣ Speech to Text ---
+  // 1️⃣ Whisper STT
   const formData = new FormData();
   formData.append("file", fs.createReadStream(audioPath));
   formData.append("model", "whisper-1");
@@ -104,17 +146,17 @@ async function processConversationLoop(callSid) {
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: formData,
   });
+
   const sttData = await sttResp.json();
   const userText = sttData.text?.trim() || "";
   console.log("🗣️ User said:", userText);
 
   if (!userText) {
-    console.log("⚠️ No speech detected, restarting stream...");
-    await restartStream(callSid);
+    console.log("⚠️ No speech detected.");
     return;
   }
 
-  // --- 2️⃣ Generate GPT response ---
+  // 2️⃣ GPT reply
   const gptResp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -124,57 +166,35 @@ async function processConversationLoop(callSid) {
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "אתה עוזר קולי נחמד שמדבר עברית בשפה טבעית וקצרה." },
+        { role: "system", content: "אתה עוזר קולי נחמד שמדבר עברית קצר וברור." },
         { role: "user", content: userText },
       ],
     }),
   });
-
   const gptData = await gptResp.json();
   const replyText = gptData.choices?.[0]?.message?.content?.trim() || "לא הצלחתי להבין.";
   console.log("🤖 GPT replied:", replyText);
 
-  // --- 3️⃣ Gemini TTS ---
-  const ttsResp = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-tts:generateSpeech?key=${GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        input: { text: replyText },
-        voice: { name: "zephyr" },
-        audioConfig: { audioEncoding: "MP3" },
-      }),
-    }
-  );
+  // 3️⃣ Gemini TTS
+  const replyUrl = await generateGeminiAudio(replyText);
 
-  const ttsData = await ttsResp.json();
-  if (!ttsData.audioContent) {
-    console.error("❌ Gemini TTS failed:", ttsData);
-    await restartStream(callSid);
-    return;
+  // 4️⃣ Play via Twilio redirect
+  try {
+    await client.calls(callSid).update({
+      method: "POST",
+      url: `${BASE_URL}/api/play?url=${encodeURIComponent(replyUrl)}`,
+    });
+    console.log("🎧 Sent playback URL:", replyUrl);
+  } catch (err) {
+    console.error("❌ Failed to play audio:", err.message);
   }
 
-  const audioDir = path.join(__dirname, "public/audio");
-  fs.mkdirSync(audioDir, { recursive: true });
-  const ttsFile = `tts_${Date.now()}.mp3`;
-  const ttsPath = path.join(audioDir, ttsFile);
-  fs.writeFileSync(ttsPath, Buffer.from(ttsData.audioContent, "base64"));
-
-  const publicUrl = `${BASE_URL}/audio/${ttsFile}`;
-  console.log("🎧 TTS file ready:", publicUrl);
-
-  // --- 4️⃣ Tell Twilio to play and loop ---
-  await client.calls(callSid).update({
-    method: "POST",
-    url: `${BASE_URL}/api/play?url=${encodeURIComponent(publicUrl)}`,
-  });
-
-  // ננקה את הבאפר
-  sessions[callSid].audioChunks = [];
+  session.audioChunks = [];
 }
 
-// 🎵 TwiML לניגון הקובץ + חזרה ללולאה
+/**
+ * 🎵 TwiML endpoint to play generated audio and reconnect
+ */
 app.post("/api/play", (req, res) => {
   const { url } = req.query;
   const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
@@ -185,20 +205,9 @@ app.post("/api/play", (req, res) => {
   res.type("text/xml").send(xmlResponse);
 });
 
-// 🔁 במקרה שאין קול או כשל — נבצע redirect כדי להאזין שוב
-async function restartStream(callSid) {
-  try {
-    await client.calls(callSid).update({
-      method: "POST",
-      url: `${BASE_URL}/api/phone/twiml`,
-    });
-    console.log("🔁 Restarted stream for call:", callSid);
-  } catch (err) {
-    console.error("❌ restartStream error:", err.message);
-  }
-}
-
-// 🚀 הפעלת השרת
+/**
+ * 🚀 Server setup
+ */
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on ${PORT}`);
   console.log(`📞 TwiML endpoint: ${BASE_URL}/api/phone/twiml`);
@@ -209,7 +218,5 @@ server.on("upgrade", (req, socket, head) => {
     wss.handleUpgrade(req, socket, head, (ws) =>
       wss.emit("connection", ws, req)
     );
-  } else {
-    socket.destroy();
-  }
+  } else socket.destroy();
 });
