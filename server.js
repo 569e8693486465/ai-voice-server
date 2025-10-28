@@ -35,7 +35,7 @@ app.use("/audio", express.static(audioDir));
  * 🗣️ Generate Gemini TTS file safely
  */
 async function generateGeminiAudio(text, filename = `tts_${Date.now()}.mp3`) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-tts:generateSpeech?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-tts:generateSpeech?key=${GEMINI_API_KEY}`;
 
   const resp = await fetch(url, {
     method: "POST",
