@@ -35,7 +35,7 @@ app.use("/audio", express.static(audioDir));
  * 🗣️ Generate ElevenLabs TTS file
  */
 async function generateElevenAudio(text, filename = `tts_${Date.now()}.mp3`) {
-  const voiceId = "UgBBYS2sOqTuMpoF3BR0";
+  const voiceId = "cTufqKY4lz94DWjU7clk";
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
 
   const resp = await fetch(url, {
