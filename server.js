@@ -133,6 +133,31 @@ wss.on("connection", (ws, req) => {
 });
 
 /**
+ * 🔁 פונקציה שממירה PCM raw ל-WAV תקין
+ */
+function pcmToWav(buffer, filename, sampleRate = 8000) {
+  const header = Buffer.alloc(44);
+  const fileSize = 44 + buffer.length - 8;
+
+  header.write("RIFF", 0);
+  header.writeUInt32LE(fileSize, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // Mono
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28); // ByteRate = SampleRate * NumChannels * BitsPerSample/8
+  header.writeUInt16LE(2, 32); // BlockAlign
+  header.writeUInt16LE(16, 34); // BitsPerSample
+  header.write("data", 36);
+  header.writeUInt32LE(buffer.length, 40);
+
+  const wavBuffer = Buffer.concat([header, buffer]);
+  fs.writeFileSync(filename, wavBuffer);
+}
+
+/**
  * 🔁 תהליך: דיבור → זיהוי → GPT → דיבור חוזר
  */
 async function processConversationLoop(callSid) {
@@ -149,14 +174,17 @@ async function processConversationLoop(callSid) {
 
   fs.mkdirSync("tmp", { recursive: true });
   const audioPath = `tmp/input_${callSid}.wav`;
-  fs.writeFileSync(audioPath, fullAudio);
+
+  // המרה ל-WAV תקין
+  pcmToWav(fullAudio, audioPath);
 
   console.log("🎙️ Processing audio for call:", callSid);
 
-  // 1️⃣ שלב זיהוי דיבור עם Whisper
+  // 1️⃣ Whisper STT
   const formData = new FormData();
   formData.append("file", await fileFromPath(audioPath));
   formData.append("model", "whisper-1");
+  formData.append("language", "he");
 
   const sttResp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
@@ -170,10 +198,11 @@ async function processConversationLoop(callSid) {
 
   if (!userText) {
     console.log("⚠️ No speech detected.");
+    session.audioChunks = [];
     return;
   }
 
-  // 2️⃣ יצירת תשובה עם GPT
+  // 2️⃣ GPT response
   const gptResp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -194,10 +223,17 @@ async function processConversationLoop(callSid) {
     gptData.choices?.[0]?.message?.content?.trim() || "לא הצלחתי להבין.";
   console.log("🤖 GPT replied:", replyText);
 
-  // 3️⃣ יצירת אודיו של התשובה
-  const replyUrl = await generateElevenAudio(replyText);
+  // 3️⃣ ElevenLabs TTS
+  let replyUrl;
+  try {
+    replyUrl = await generateElevenAudio(replyText);
+  } catch (err) {
+    console.error("❌ ElevenLabs TTS failed:", err.message);
+    session.audioChunks = [];
+    return;
+  }
 
-  // 4️⃣ הפעלת ההקלטה בטוויליו
+  // 4️⃣ Play reply
   try {
     await client.calls(callSid).update({
       method: "POST",
@@ -212,7 +248,7 @@ async function processConversationLoop(callSid) {
 }
 
 /**
- * 🎵 TwiML להשמעת תשובה + התחברות מחדש
+ * 🎵 TwiML endpoint להשמעת תשובה + התחברות מחדש
  */
 app.post("/api/play", (req, res) => {
   const { url } = req.query;
