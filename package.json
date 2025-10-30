@@ -13,7 +13,10 @@
     "ws": "^8.18.0",
     "node-fetch": "^3.3.2",
     "formdata-node": "^6.0.0",
-    "twilio": "^4.22.0"
+    "twilio": "^4.22.0",
+    "wav-encoder": "^1.3.0"
   },
-  "engines": { "node": ">=18.0.0" }
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
