@@ -8,13 +8,14 @@ import { fileURLToPath } from "url";
 import { FormData } from "formdata-node";
 import { fileFromPath } from "formdata-node/file-from-path";
 import twilio from "twilio";
+import WavEncoder from "wav-encoder"; // ✅ חדש - המרת האודיו ל-WAV תקין
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3001;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
@@ -149,11 +150,26 @@ async function processConversationLoop(callSid) {
 
   fs.mkdirSync("tmp", { recursive: true });
   const audioPath = `tmp/input_${callSid}.wav`;
-  fs.writeFileSync(audioPath, fullAudio);
 
   console.log("🎙️ Processing audio for call:", callSid);
 
-  // 1️⃣ שלב זיהוי דיבור עם Whisper
+  // ✅ המרה נכונה מ־PCM ל־WAV
+  const audioData = {
+    sampleRate: 8000, // Twilio משתמשת ב-8kHz
+    channelData: [new Float32Array(fullAudio.length / 2)],
+  };
+
+  const floatData = new Float32Array(fullAudio.length / 2);
+  for (let i = 0; i < fullAudio.length; i += 2) {
+    const sample = fullAudio.readInt16LE(i);
+    floatData[i / 2] = sample / 32768;
+  }
+  audioData.channelData[0] = floatData;
+
+  const wavBuffer = await WavEncoder.encode(audioData);
+  fs.writeFileSync(audioPath, Buffer.from(wavBuffer));
+
+  // 1️⃣ זיהוי דיבור עם Whisper
   const formData = new FormData();
   formData.append("file", await fileFromPath(audioPath));
   formData.append("model", "whisper-1");
@@ -173,7 +189,7 @@ async function processConversationLoop(callSid) {
     return;
   }
 
-  // 2️⃣ יצירת תשובה עם GPT
+  // 2️⃣ תשובה עם GPT
   const gptResp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -190,14 +206,13 @@ async function processConversationLoop(callSid) {
   });
 
   const gptData = await gptResp.json();
-  const replyText =
-    gptData.choices?.[0]?.message?.content?.trim() || "לא הצלחתי להבין.";
+  const replyText = gptData.choices?.[0]?.message?.content?.trim() || "לא הצלחתי להבין.";
   console.log("🤖 GPT replied:", replyText);
 
-  // 3️⃣ יצירת אודיו של התשובה
+  // 3️⃣ יצירת קובץ TTS
   const replyUrl = await generateElevenAudio(replyText);
 
-  // 4️⃣ הפעלת ההקלטה בטוויליו
+  // 4️⃣ הפעלת התשובה בטוויליו
   try {
     await client.calls(callSid).update({
       method: "POST",
@@ -233,8 +248,6 @@ const server = app.listen(PORT, () => {
 
 server.on("upgrade", (req, socket, head) => {
   if (req.url === "/media") {
-    wss.handleUpgrade(req, socket, head, (ws) =>
-      wss.emit("connection", ws, req)
-    );
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   } else socket.destroy();
 });
