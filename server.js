@@ -24,16 +24,15 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const BASE_URL = "https://ai-voice-server-t4l5.onrender.com";
 
-// ✨ יצירת קובץ credentials ל-Google מהסביבה
-const credentialsPath = path.join(__dirname, "google-key.json");
-if (process.env.GOOGLE_CREDENTIALS) {
-  fs.writeFileSync(credentialsPath, process.env.GOOGLE_CREDENTIALS);
+// ✨ Google STT – טוען credentials מה-Environment
+let speechClient;
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  const credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+  speechClient = new speech.SpeechClient({ credentials });
+} else {
+  console.error("❌ Missing GOOGLE_APPLICATION_CREDENTIALS_JSON env variable!");
+  process.exit(1);
 }
-
-// לקוח של Google Speech-to-Text
-const speechClient = new speech.SpeechClient({
-  keyFilename: credentialsPath,
-});
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -46,7 +45,7 @@ const audioDir = path.join(__dirname, "public/audio");
 fs.mkdirSync(audioDir, { recursive: true });
 app.use("/audio", express.static(audioDir));
 
-/** 🎙️ פונקציה ליצירת דיבור עם ElevenLabs */
+/** 🎙️ ElevenLabs – הפקת אודיו מדיבור */
 async function generateElevenAudio(text, filename = `tts_${Date.now()}.mp3`) {
   const voiceId = "UgBBYS2sOqTuMpoF3BR0";
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
@@ -79,7 +78,7 @@ async function generateElevenAudio(text, filename = `tts_${Date.now()}.mp3`) {
   return `${BASE_URL}/audio/${filename}`;
 }
 
-/** 📞 Twilio TwiML Greeting */
+/** 📞 Twilio Greeting */
 app.post("/api/phone/twiml", async (req, res) => {
   try {
     const greetingText = "שלום! אני העוזרת הקולית שלך. איך אפשר לעזור?";
@@ -127,7 +126,7 @@ wss.on("connection", (ws, req) => {
         const chunk = Buffer.from(msg.media.payload, "base64");
         sessions[callSid]?.audioChunks.push(chunk);
 
-        // עיבוד אוטומטי לאחר מספיק אודיו
+        // עיבוד אוטומטי אחרי מספיק אודיו
         if (
           sessions[callSid].audioChunks.length > 50 &&
           !sessions[callSid].processing
@@ -149,7 +148,7 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => console.log("🔚 WS closed"));
 });
 
-/** 🎧 עיבוד קלט קולי עם Google STT */
+/** 🎧 Google STT + GPT + ElevenLabs */
 async function processConversationLoop(callSid) {
   const session = sessions[callSid];
   if (!session) return;
@@ -165,24 +164,19 @@ async function processConversationLoop(callSid) {
   const audioPath = `tmp/input_${callSid}.wav`;
   fs.mkdirSync("tmp", { recursive: true });
 
-  // המרת אודיו ל-WAV בפורמט תקין
+  // המרת האודיו ל-WAV
   const floatData = new Float32Array(fullAudio.length / 2);
   for (let i = 0; i < fullAudio.length; i += 2) {
     const sample = fullAudio.readInt16LE(i);
     floatData[i / 2] = sample / 32768;
   }
 
-  const audioData = {
-    sampleRate: 8000,
-    channelData: [floatData],
-  };
-
+  const audioData = { sampleRate: 8000, channelData: [floatData] };
   const wavBuffer = await WavEncoder.encode(audioData);
   fs.writeFileSync(audioPath, Buffer.from(wavBuffer));
 
-  console.log("🎙️ Processing audio for call:", callSid);
+  console.log("🎙️ Sending audio to Google STT...");
 
-  // Google Speech-to-Text
   const [sttResponse] = await speechClient.recognize({
     audio: { content: fs.readFileSync(audioPath).toString("base64") },
     config: {
