@@ -5,10 +5,10 @@ import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { FormData } from "formdata-node";
-import { fileFromPath } from "formdata-node/file-from-path";
 import WavEncoder from "wav-encoder";
 import twilio from "twilio";
+import { SpeechClient } from "@google-cloud/speech";
+import VAD from "vad";
 
 dotenv.config();
 
@@ -20,24 +20,27 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const BASE_URL = process.env.BASE_URL || "http://localhost:8080";
 
-const BASE_URL = "https://ai-voice-server-t4l5.onrender.com";
+// 🔐 Google Credentials
+const googleCredentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+const speechClient = new SpeechClient({ credentials: googleCredentials });
+
+// Twilio client
+const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+
+// תיקיית אודיו ציבורית
+const audioDir = path.join(__dirname, "public/audio");
+fs.mkdirSync(audioDir, { recursive: true });
+
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-
-const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
-
-// 📁 תיקיית אודיו ציבורית
-const audioDir = path.join(__dirname, "public/audio");
-fs.mkdirSync(audioDir, { recursive: true });
 app.use("/audio", express.static(audioDir));
 
-/**
- * 🗣️ יצירת קובץ TTS בעזרת ElevenLabs
- */
+// --- TTS ElevenLabs ---
 async function generateElevenAudio(text, filename = `tts_${Date.now()}.mp3`) {
-  const voiceId = "UgBBYS2sOqTuMpoF3BR0"; // הקול שלך
+  const voiceId = "UgBBYS2sOqTuMpoF3BR0";
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
 
   const resp = await fetch(url, {
@@ -47,18 +50,14 @@ async function generateElevenAudio(text, filename = `tts_${Date.now()}.mp3`) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model_id: "eleven_v3",
       text,
-      voice_settings: {
-        stability: 0.5,
-        similarity_boost: 0.8,
-      },
+      model_id: "eleven_multilingual_v2",
+      voice_settings: { stability: 0.5, similarity_boost: 0.8 },
     }),
   });
 
   if (!resp.ok) {
-    const errorText = await resp.text();
-    throw new Error(`ElevenLabs TTS HTTP ${resp.status}: ${errorText}`);
+    throw new Error(`ElevenLabs TTS error ${resp.status}`);
   }
 
   const arrayBuffer = await resp.arrayBuffer();
@@ -68,191 +67,87 @@ async function generateElevenAudio(text, filename = `tts_${Date.now()}.mp3`) {
   return `${BASE_URL}/audio/${filename}`;
 }
 
-/**
- * 📞 TwiML endpoint להתחלת שיחה
- */
-app.post("/api/phone/twiml", async (req, res) => {
-  try {
-    const greetingText = "שלום! אני העוזרת הקולית שלך. אני מאזינה עכשיו...";
-    const greetingUrl = await generateElevenAudio(greetingText, "greeting.mp3");
-
-    const WS_URL = `wss://ai-voice-server-t4l5.onrender.com/media`;
-
-    const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Play>${greetingUrl}</Play>
-  <Connect>
-    <Stream url="${WS_URL}" />
-  </Connect>
-</Response>`;
-
-    res.type("text/xml").send(xmlResponse);
-  } catch (err) {
-    console.error("❌ Error creating greeting:", err.message);
-    res.status(500)
-      .type("text/xml")
-      .send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
-  }
-});
-
-/**
- * 🔗 WebSocket של Twilio Media Stream
- */
-const wss = new WebSocketServer({ noServer: true });
-const sessions = {};
-
-wss.on("connection", (ws, req) => {
-  console.log("🔗 Twilio Media Stream connected");
-  let callSid = null;
-
-  ws.on("message", async (raw) => {
-    try {
-      const msg = JSON.parse(raw.toString());
-
-      // התחלת שיחה
-      if (msg.event === "start") {
-        callSid = msg.start.callSid;
-        sessions[callSid] = { audioChunks: [], ws, processing: false };
-        console.log("📞 New call started:", callSid);
-      }
-
-      // קליטת אודיו בזמן אמת
-      if (msg.event === "media") {
-        const chunk = Buffer.from(msg.media.payload, "base64");
-        sessions[callSid]?.audioChunks.push(chunk);
-
-        // אם נאספו מספיק נתונים, נבצע עיבוד
-        if (sessions[callSid].audioChunks.length > 50 && !sessions[callSid].processing) {
-          sessions[callSid].processing = true;
-          await processConversationLoop(callSid);
-          sessions[callSid].processing = false;
-        }
-      }
-
-      // סוף השיחה
-      if (msg.event === "stop") {
-        console.log("🛑 Stream stopped for call", callSid);
-      }
-    } catch (err) {
-      console.error("❌ WS error:", err);
-    }
-  });
-
-  ws.on("close", () => console.log("🔚 WS closed"));
-});
-
-/**
- * 🎧 עיבוד: אודיו → Whisper → GPT → ElevenLabs → Playback
- */
-async function processConversationLoop(callSid) {
-  const session = sessions[callSid];
-  if (!session || session.audioChunks.length === 0) return;
-
-  const fullAudio = Buffer.concat(session.audioChunks);
-  console.log("🎧 Received audio bytes:", fullAudio.length);
-
-  if (fullAudio.length < 4000) {
-    console.log("⚠️ Audio too short, skipping.");
-    return;
-  }
-
-  fs.mkdirSync("tmp", { recursive: true });
-  const audioPath = `tmp/input_${callSid}.wav`;
-
-  // המרת האודיו ל־WAV תקני (Twilio שולחת PCM 16-bit 8kHz)
-  const audioData = {
-    sampleRate: 8000,
-    channelData: [new Float32Array(fullAudio.length / 2)],
-  };
-  const floatData = new Float32Array(fullAudio.length / 2);
-  for (let i = 0; i < fullAudio.length; i += 2) {
-    const sample = fullAudio.readInt16LE(i);
-    floatData[i / 2] = sample / 32768;
-  }
-  audioData.channelData[0] = floatData;
-
-  const wavBuffer = await WavEncoder.encode(audioData);
-  fs.writeFileSync(audioPath, Buffer.from(wavBuffer));
-
-  console.log("🎙️ Processing audio for call:", callSid);
-
-  // שלב 1️⃣ — תמלול עם Whisper
-  const formData = new FormData();
-  formData.append("file", await fileFromPath(audioPath));
-  formData.append("model", "whisper-1");
-
-  const sttResp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+// --- GPT response ---
+async function getAIResponse(text) {
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-    body: formData,
-  });
-  const sttData = await sttResp.json();
-  const userText = sttData.text?.trim() || "";
-  console.log("🗣️ User said:", userText);
-
-  if (!userText) return;
-
-  // שלב 2️⃣ — תשובת GPT
-  const gptResp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
+    headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages: [
         { role: "system", content: "אתה עוזר קולי נחמד שמדבר בעברית קצר וברור." },
-        { role: "user", content: userText },
+        { role: "user", content: text },
       ],
     }),
   });
-  const gptData = await gptResp.json();
-  const replyText = gptData.choices?.[0]?.message?.content?.trim() || "לא הצלחתי להבין.";
-  console.log("🤖 GPT replied:", replyText);
-
-  // שלב 3️⃣ — יצירת דיבור ElevenLabs
-  const replyUrl = await generateElevenAudio(replyText);
-
-  // שלב 4️⃣ — הפעלת ההודעה אצל Twilio
-  try {
-    await client.calls(callSid).update({
-      method: "POST",
-      url: `${BASE_URL}/api/play?url=${encodeURIComponent(replyUrl)}`,
-    });
-    console.log("🎧 Sent playback URL:", replyUrl);
-  } catch (err) {
-    console.error("❌ Failed to play audio:", err.message);
-  }
-
-  // איפוס הצטברות הנתונים לשיחה
-  session.audioChunks = [];
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content?.trim() || "";
 }
 
-/**
- * 🎵 TwiML endpoint להשמעת תשובות
- */
-app.post("/api/play", (req, res) => {
-  const { url } = req.query;
-  const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Play>${url}</Play>
-  <Redirect>${BASE_URL}/api/phone/twiml</Redirect>
-</Response>`;
-  res.type("text/xml").send(xmlResponse);
+// --- WebSocket + VAD + Google Streaming STT ---
+const wss = new WebSocketServer({ noServer: true });
+
+wss.on("connection", (ws) => {
+  console.log("🔗 Twilio Media Stream connected");
+
+  // init VAD
+  const vad = new VAD(VAD.Mode.NORMAL);
+  let audioBufferChunks = [];
+
+  // init Google stream
+  const recognizeStream = speechClient.streamingRecognize({
+    config: { encoding: "LINEAR16", sampleRateHertz: 8000, languageCode: "he-IL" },
+    interimResults: true,
+  })
+  .on("data", async (data) => {
+    const transcript = data.results[0]?.alternatives[0]?.transcript || "";
+    const isFinal = data.results[0]?.isFinal;
+
+    if (isFinal && transcript) {
+      console.log("🗣️ User:", transcript);
+
+      const replyText = await getAIResponse(transcript);
+      console.log("🤖 GPT:", replyText);
+
+      const audioUrl = await generateElevenAudio(replyText);
+      ws.send(JSON.stringify({ event: "play_audio", url: audioUrl }));
+    }
+  })
+  .on("error", (err) => console.error("Google STT error:", err));
+
+  ws.on("message", (msg) => {
+    const data = JSON.parse(msg);
+    if (data.event === "media" && data.media?.payload) {
+      const chunk = Buffer.from(data.media.payload, "base64");
+      
+      // VAD detection
+      const voiceState = vad.processAudio(chunk, 8000);
+      if (voiceState === VAD.Event.VOICE) {
+        recognizeStream.write(chunk);
+      }
+      // silence → ניתן לשלוח סיום stream או להתעלם
+    } else if (data.event === "stop") {
+      recognizeStream.end();
+    }
+  });
+
+  ws.on("close", () => {
+    recognizeStream.end();
+    console.log("🔴 Twilio disconnected");
+  });
 });
 
-/**
- * 🚀 הפעלת השרת
- */
-const server = app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+// --- Twilio webhook ---
+app.post("/call", (req, res) => {
+  const response = new twilio.twiml.VoiceResponse();
+  response.connect().stream({ url: `${BASE_URL}/media` });
+  res.type("text/xml").send(response.toString());
 });
 
+// --- server upgrade handler ---
+const server = app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 server.on("upgrade", (req, socket, head) => {
   if (req.url === "/media") {
-    wss.handleUpgrade(req, socket, head, (ws) =>
-      wss.emit("connection", ws, req)
-    );
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   } else socket.destroy();
 });
