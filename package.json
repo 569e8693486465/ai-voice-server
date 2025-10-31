@@ -1,23 +1,19 @@
 {
-  "name": "ai-voice-assistant",
+  "name": "ai-voice-server",
   "version": "1.0.0",
   "type": "module",
-  "description": "Voice assistant using Twilio, Google Streaming STT, GPT, and ElevenLabs TTS",
-  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "@google-cloud/speech": "^6.5.0",
-    "dotenv": "^16.3.1",
+    "@google-cloud/speech": "^6.5.1",
     "express": "^4.18.2",
+    "ws": "^8.17.0",
+    "dotenv": "^16.3.1",
     "node-fetch": "^3.3.2",
+    "formdata-node": "^4.0.8",
+    "wav-encoder": "^1.6.1",
     "twilio": "^4.16.0",
-    "vad": "^1.0.1",
-    "wav-encoder": "^1.5.0",
-    "ws": "^8.17.0"
-  },
-  "engines": {
-    "node": ">=20.0.0"
+    "node-vad": "^0.2.1"
   }
 }
