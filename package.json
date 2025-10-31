@@ -6,14 +6,15 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@google-cloud/speech": "^6.5.1",
-    "express": "^4.18.2",
-    "ws": "^8.17.0",
+    "@google-cloud/speech": "^6.4.0",
     "dotenv": "^16.3.1",
-    "node-fetch": "^3.3.2",
-    "formdata-node": "^4.0.8",
-    "wav-encoder": "^1.6.1",
-    "twilio": "^4.16.0",
-    "node-vad": "^0.2.1"
+    "express": "^4.18.2",
+    "node-fetch": "^3.4.2",
+    "twilio": "^4.14.0",
+    "wav-encoder": "^1.7.0",
+    "formdata-node": "^4.1.0"
+  },
+  "engines": {
+    "node": "20.x"
   }
 }
