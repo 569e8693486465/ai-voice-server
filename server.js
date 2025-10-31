@@ -5,12 +5,11 @@ import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { FormData } from "formdata-node";
-import { fileFromPath } from "formdata-node/file-from-path";
 import WavEncoder from "wav-encoder";
 import twilio from "twilio";
 import { SpeechClient } from "@google-cloud/speech";
-import VAD from "node-vad";
+import { FormData } from "formdata-node";
+import { fileFromPath } from "formdata-node/file-from-path";
 
 dotenv.config();
 
@@ -24,7 +23,7 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const BASE_URL = process.env.BASE_URL || "https://ai-voice-server-t4l5.onrender.com";
 
-// Google Cloud credentials
+// Google credentials
 const googleCredentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
 const speechClient = new SpeechClient({ credentials: googleCredentials });
 
@@ -39,10 +38,11 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 app.use("/audio", express.static(audioDir));
 
-// --- TTS ElevenLabs ---
+/** --- TTS ElevenLabs --- */
 async function generateElevenAudio(text, filename = `tts_${Date.now()}.mp3`) {
   const voiceId = "UgBBYS2sOqTuMpoF3BR0";
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
+
   const resp = await fetch(url, {
     method: "POST",
     headers: {
@@ -51,27 +51,25 @@ async function generateElevenAudio(text, filename = `tts_${Date.now()}.mp3`) {
     },
     body: JSON.stringify({
       text,
-      model_id: "eleven_v3",
+      model_id: "eleven_multilingual_v2",
       voice_settings: { stability: 0.5, similarity_boost: 0.8 }
     })
   });
 
-  if (!resp.ok) {
-    const errorText = await resp.text();
-    throw new Error(`ElevenLabs TTS HTTP ${resp.status}: ${errorText}`);
-  }
+  if (!resp.ok) throw new Error(`ElevenLabs TTS error ${resp.status}`);
 
-  const buffer = Buffer.from(await resp.arrayBuffer());
+  const arrayBuffer = await resp.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
   const filePath = path.join(audioDir, filename);
   fs.writeFileSync(filePath, buffer);
   return `${BASE_URL}/audio/${filename}`;
 }
 
-// --- GPT response ---
+/** --- GPT --- */
 async function getAIResponse(text) {
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    headers: { "Authorization": `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages: [
@@ -84,12 +82,13 @@ async function getAIResponse(text) {
   return data.choices?.[0]?.message?.content?.trim() || "";
 }
 
-// --- Twilio /api/phone/twiml ---
+/** --- Twilio Webhook --- */
 app.post("/api/phone/twiml", async (req, res) => {
   try {
     const greetingText = "שלום! אני העוזרת הקולית שלך. אני מאזינה עכשיו...";
     const greetingUrl = await generateElevenAudio(greetingText, "greeting.mp3");
-    const WS_URL = `wss://ai-voice-server-t4l5.onrender.com/media`;
+
+    const WS_URL = `${BASE_URL}/media`;
 
     const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -102,44 +101,51 @@ app.post("/api/phone/twiml", async (req, res) => {
     res.type("text/xml").send(xmlResponse);
   } catch (err) {
     console.error("❌ Error creating greeting:", err.message);
-    res.status(500).type("text/xml")
-      .send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+    res.status(500).type("text/xml").send(
+      `<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`
+    );
   }
 });
 
-// --- WebSocket Media Stream + VAD + Google Streaming STT ---
+/** --- WebSocket + Google Streaming STT + RMS VAD --- */
 const wss = new WebSocketServer({ noServer: true });
+const sessions = {};
+
+// פונקציית VAD מבוססת RMS
+function isVoice(chunk) {
+  let sum = 0;
+  for (let i = 0; i < chunk.length; i += 2) {
+    const sample = chunk.readInt16LE(i);
+    sum += (sample / 32768) ** 2;
+  }
+  const rms = Math.sqrt(sum / (chunk.length / 2));
+  return rms > 0.02; // Threshold – אפשר לכוון לפי הצורך
+}
 
 wss.on("connection", (ws) => {
   console.log("🔗 Twilio Media Stream connected");
 
-  const vad = new VAD(VAD.Mode.NORMAL);
-  let audioChunks = [];
-
   const recognizeStream = speechClient.streamingRecognize({
     config: { encoding: "LINEAR16", sampleRateHertz: 8000, languageCode: "he-IL" },
-    interimResults: true
+    interimResults: false
   })
-  .on("data", async (data) => {
-    const transcript = data.results[0]?.alternatives[0]?.transcript || "";
-    const isFinal = data.results[0]?.isFinal;
+    .on("data", async (data) => {
+      const transcript = data.results[0]?.alternatives[0]?.transcript || "";
+      if (!transcript) return;
 
-    if (isFinal && transcript) {
       console.log("🗣️ User:", transcript);
       const replyText = await getAIResponse(transcript);
       console.log("🤖 GPT:", replyText);
       const audioUrl = await generateElevenAudio(replyText);
       ws.send(JSON.stringify({ event: "play_audio", url: audioUrl }));
-    }
-  })
-  .on("error", (err) => console.error("Google STT error:", err));
+    })
+    .on("error", (err) => console.error("Google STT error:", err));
 
   ws.on("message", (msg) => {
     const data = JSON.parse(msg);
     if (data.event === "media" && data.media?.payload) {
       const chunk = Buffer.from(data.media.payload, "base64");
-      const voiceState = vad.processAudio(chunk, 8000);
-      if (voiceState === VAD.Event.VOICE) {
+      if (isVoice(chunk)) {
         recognizeStream.write(chunk);
       }
     } else if (data.event === "stop") {
@@ -153,18 +159,7 @@ wss.on("connection", (ws) => {
   });
 });
 
-// --- Twilio webhook for call connect ---
-app.post("/api/play", (req, res) => {
-  const { url } = req.query;
-  const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Play>${url}</Play>
-  <Redirect>${BASE_URL}/api/phone/twiml</Redirect>
-</Response>`;
-  res.type("text/xml").send(xmlResponse);
-});
-
-// --- server + upgrade handler ---
+/** --- server upgrade --- */
 const server = app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 server.on("upgrade", (req, socket, head) => {
   if (req.url === "/media") {
