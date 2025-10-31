@@ -20,7 +20,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVEN_API_KEY = process.env.ELEVEN_API_KEY;
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-const BASE_URL = process.env.BASE_URL || "http://localhost:8080";
+const BASE_URL = "https://ai-voice-server-t4l5.onrender.com";
 
 // 🔐 Google Credentials
 const googleCredentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
@@ -92,7 +92,6 @@ wss.on("connection", (ws) => {
 
   // init VAD
   const vad = new VAD(VAD.Mode.NORMAL);
-  let audioBufferChunks = [];
 
   // init Google stream
   const recognizeStream = speechClient.streamingRecognize({
@@ -125,7 +124,6 @@ wss.on("connection", (ws) => {
       if (voiceState === VAD.Event.VOICE) {
         recognizeStream.write(chunk);
       }
-      // silence → ניתן לשלוח סיום stream או להתעלם
     } else if (data.event === "stop") {
       recognizeStream.end();
     }
