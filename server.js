@@ -1,7 +1,6 @@
 // server.js
 import express from "express";
 import bodyParser from "body-parser";
-import fetch from "node-fetch";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -9,22 +8,12 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// נשתמש בפורמט JSON לבקשות רגילות
 app.use(bodyParser.json());
 
-/**
- * ברירת מחדל – לבדוק שהשרת חי
- */
 app.get("/", (req, res) => {
   res.send("✅ Recall + HeyGen bridge is running!");
 });
 
-/**
- * נתיב שמקבל אודיו מ-Recall.ai
- * - ממיר אותו לטקסט בעזרת ElevenLabs STT
- * - שולח את הטקסט ל-OpenAI GPT-4o-mini ליצירת תגובה
- * - שולח את התגובה ל-HeyGen כדי שהאווטר ידבר
- */
 app.post(
   "/recall-audio",
   bodyParser.raw({ type: ["audio/*"], limit: "60mb" }),
@@ -36,7 +25,7 @@ app.post(
         return res.status(400).send("No audio data received");
       }
 
-      // 1️⃣ שלב ראשון – שליחה ל-ElevenLabs STT
+      // 1️⃣ Speech-to-Text (ElevenLabs)
       const sttResponse = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
         method: "POST",
         headers: {
@@ -54,7 +43,7 @@ app.post(
         return res.status(400).send("No transcription result from ElevenLabs");
       }
 
-      // 2️⃣ שלב שני – יצירת תגובה בעזרת GPT-4o-mini
+      // 2️⃣ GPT-4o-mini response
       const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -81,7 +70,7 @@ app.post(
         return res.status(400).send("No GPT response");
       }
 
-      // 3️⃣ שלב שלישי – שליחה ל-HeyGen Interactive API
+      // 3️⃣ HeyGen Interactive Speak
       const heygenSession = process.env.HEYGEN_SESSION_ID;
       const heygenApiKey = process.env.HEYGEN_API_KEY;
 
@@ -113,9 +102,6 @@ app.post(
   }
 );
 
-/**
- * מאזין ל-Render
- */
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
