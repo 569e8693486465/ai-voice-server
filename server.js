@@ -1,92 +1,121 @@
+// server.js
 import express from "express";
-async function openaiChatReply(userText) {
-const key = process.env.OPENAI_API_KEY;
-if (!key) throw new Error('Missing OPENAI_API_KEY');
+import bodyParser from "body-parser";
+import fetch from "node-fetch";
+import dotenv from "dotenv";
 
+dotenv.config();
 
-const messages = [
-{ role: 'system', content: 'You are a friendly avatar assistant. Reply concisely and in a voice suitable for speaking aloud. Keep replies short.' },
-{ role: 'user', content: userText }
-];
+const app = express();
+const PORT = process.env.PORT || 3000;
 
+// נשתמש בפורמט JSON לבקשות רגילות
+app.use(bodyParser.json());
 
-const res = await axios.post(
-'https://api.openai.com/v1/chat/completions',
-{ model: 'gpt-4o-mini', messages, max_tokens: 200 },
-{ headers: { Authorization: `Bearer ${key}` }, timeout: 60000 }
+/**
+ * ברירת מחדל – לבדוק שהשרת חי
+ */
+app.get("/", (req, res) => {
+  res.send("✅ Recall + HeyGen bridge is running!");
+});
+
+/**
+ * נתיב שמקבל אודיו מ-Recall.ai
+ * - ממיר אותו לטקסט בעזרת ElevenLabs STT
+ * - שולח את הטקסט ל-OpenAI GPT-4o-mini ליצירת תגובה
+ * - שולח את התגובה ל-HeyGen כדי שהאווטר ידבר
+ */
+app.post(
+  "/recall-audio",
+  bodyParser.raw({ type: ["audio/*"], limit: "60mb" }),
+  async (req, res) => {
+    try {
+      console.log("🎧 Received audio from Recall");
+
+      if (!req.body || !req.body.length) {
+        return res.status(400).send("No audio data received");
+      }
+
+      // 1️⃣ שלב ראשון – שליחה ל-ElevenLabs STT
+      const sttResponse = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+        method: "POST",
+        headers: {
+          "xi-api-key": process.env.ELEVENLABS_API_KEY,
+          "Content-Type": "audio/mpeg",
+        },
+        body: req.body,
+      });
+
+      const sttData = await sttResponse.json();
+      const transcript = sttData.text || sttData.transcript || "";
+      console.log("🗣️ Transcribed text:", transcript);
+
+      if (!transcript) {
+        return res.status(400).send("No transcription result from ElevenLabs");
+      }
+
+      // 2️⃣ שלב שני – יצירת תגובה בעזרת GPT-4o-mini
+      const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: "You are a friendly virtual avatar speaking naturally in conversation.",
+            },
+            { role: "user", content: transcript },
+          ],
+        }),
+      });
+
+      const aiData = await openaiResponse.json();
+      const aiText = aiData.choices?.[0]?.message?.content?.trim() || "";
+      console.log("🤖 GPT Response:", aiText);
+
+      if (!aiText) {
+        return res.status(400).send("No GPT response");
+      }
+
+      // 3️⃣ שלב שלישי – שליחה ל-HeyGen Interactive API
+      const heygenSession = process.env.HEYGEN_SESSION_ID;
+      const heygenApiKey = process.env.HEYGEN_API_KEY;
+
+      if (!heygenSession) {
+        console.error("❌ Missing HEYGEN_SESSION_ID in .env");
+        return res.status(400).send("Missing HeyGen session");
+      }
+
+      const heygenResponse = await fetch("https://api.heygen.com/v1/streaming.speak", {
+        method: "POST",
+        headers: {
+          "x-api-key": heygenApiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_id: heygenSession,
+          text: aiText,
+        }),
+      });
+
+      const heygenData = await heygenResponse.json();
+      console.log("🦾 Sent to HeyGen:", heygenData);
+
+      res.json({ transcript, aiText, heygen: heygenData });
+    } catch (err) {
+      console.error("❌ Error in /recall-audio:", err);
+      res.status(500).send("Internal server error");
+    }
+  }
 );
 
-
-const reply = res.data?.choices?.[0]?.message?.content?.trim() || '';
-return reply;
-}
-
-
-// Utility: call HeyGen Interactive API (create streaming session / speak)
-async function heygenCreateStream(text) {
-const key = process.env.HEYGEN_API_KEY;
-if (!key) throw new Error('Missing HEYGEN_API_KEY');
-
-
-// Example payload - adapt fields to HeyGen's current API spec
-const payload = {
-avatar_id: process.env.HEYGEN_AVATAR_ID || 'thaddeus_chair_public',
-voice: process.env.HEYGEN_VOICE || 'sophia',
-text,
-// request HLS stream
-stream: true,
-video: { width: 1280, height: 720 }
-};
-
-
-const res = await axios.post('https://api.heygen.com/v1/streaming.create', payload, {
-headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-timeout: 60000
+/**
+ * מאזין ל-Render
+ */
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
-
-
-// Example response shape: { data: { stream_url: 'https://stream.heygen.com/hls/abcd/index.m3u8' } }
-const streamUrl = res.data?.data?.stream_url || res.data?.stream_url || '';
-return streamUrl;
-}
-
-
-// Endpoint: Recall.ai will POST raw audio here
-app.post('/recall-audio', bodyParser.raw({ type: ['audio/*'], limit: '60mb' }), async (req, res) => {
-try {
-console.log('Received audio chunk, bytes=', req.body?.length);
-const contentType = req.get('Content-Type') || 'audio/mpeg';
-
-
-// 1) STT
-const text = await elevenLabsSTT(req.body, contentType);
-console.log('STT text:', text);
-if (!text || !text.trim()) return res.status(200).json({ ok: true, text: '' });
-
-
-// 2) ChatGPT
-const reply = await openaiChatReply(text);
-console.log('ChatGPT reply:', reply);
-
-
-latestReply = reply;
-latestMeta.time = new Date().toISOString();
-
-
-// 3) Ask HeyGen to render this reply and return HLS stream URL
-const streamUrl = await heygenCreateStream(reply);
-console.log('HeyGen stream_url:', streamUrl);
-
-
-if (streamUrl) latestStreamUrl = streamUrl;
-
-
-return res.status(200).json({ ok: true, text, reply, stream_url: streamUrl });
-} catch (err) {
-console.error('/recall-audio error:', err?.message || err);
-return res.status(500).json({ error: err?.message || String(err) });
-}
-});
-
-
-app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
