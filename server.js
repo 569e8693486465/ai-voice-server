@@ -1,64 +1,92 @@
 import express from "express";
-import fetch from "node-fetch";
+async function openaiChatReply(userText) {
+const key = process.env.OPENAI_API_KEY;
+if (!key) throw new Error('Missing OPENAI_API_KEY');
 
-const app = express();
-app.use(express.json({ limit: "50mb" })); // מאפשרים טקסטים ארוכים
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY; // מפתח Gemini ב-env
-const BEARER_TOKEN = "my-secret-token-123";       // חייב להיות אותו token כמו ב-Custom Credential
+const messages = [
+{ role: 'system', content: 'You are a friendly avatar assistant. Reply concisely and in a voice suitable for speaking aloud. Keep replies short.' },
+{ role: 'user', content: userText }
+];
 
-// Route ל-Vapi Custom TTS
-app.post("/tts", async (req, res) => {
-  try {
-    // בדיקה של Authorization Header
-    const authHeader = req.headers["authorization"];
-    if (!authHeader || authHeader !== `Bearer ${BEARER_TOKEN}`) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
 
-    const { text } = req.body;
-    if (!text || text.trim() === "") {
-      return res.status(400).json({ error: "Missing text" });
-    }
+const res = await axios.post(
+'https://api.openai.com/v1/chat/completions',
+{ model: 'gpt-4o-mini', messages, max_tokens: 200 },
+{ headers: { Authorization: `Bearer ${key}` }, timeout: 60000 }
+);
 
-    // שליחה ל-Gemini TTS
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text }] }],
-          generationConfig: {
-            responseMimeType: "audio/wav"
-          }
-        })
-      }
-    );
 
-    if (!geminiResponse.ok) {
-      const errText = await geminiResponse.text();
-      console.error("Gemini TTS error:", errText);
-      return res.status(500).json({ error: "Gemini TTS failed" });
-    }
+const reply = res.data?.choices?.[0]?.message?.content?.trim() || '';
+return reply;
+}
 
-    // קבלת אודיו כ-buffer
-    const audioBuffer = Buffer.from(await geminiResponse.arrayBuffer());
 
-    // מחזירים ל-Vapi
-    res.setHeader("Content-Type", "application/octet-stream");
-    res.send(audioBuffer);
+// Utility: call HeyGen Interactive API (create streaming session / speak)
+async function heygenCreateStream(text) {
+const key = process.env.HEYGEN_API_KEY;
+if (!key) throw new Error('Missing HEYGEN_API_KEY');
 
-  } catch (err) {
-    console.error("Server error:", err);
-    res.status(500).json({ error: err.message });
-  }
+
+// Example payload - adapt fields to HeyGen's current API spec
+const payload = {
+avatar_id: process.env.HEYGEN_AVATAR_ID || 'thaddeus_chair_public',
+voice: process.env.HEYGEN_VOICE || 'sophia',
+text,
+// request HLS stream
+stream: true,
+video: { width: 1280, height: 720 }
+};
+
+
+const res = await axios.post('https://api.heygen.com/v1/streaming.create', payload, {
+headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+timeout: 60000
 });
 
-// Optional: בדיקה מהדפדפן
-app.get("/", (req, res) => {
-  res.send("Gemini TTS server is running!");
+
+// Example response shape: { data: { stream_url: 'https://stream.heygen.com/hls/abcd/index.m3u8' } }
+const streamUrl = res.data?.data?.stream_url || res.data?.stream_url || '';
+return streamUrl;
+}
+
+
+// Endpoint: Recall.ai will POST raw audio here
+app.post('/recall-audio', bodyParser.raw({ type: ['audio/*'], limit: '60mb' }), async (req, res) => {
+try {
+console.log('Received audio chunk, bytes=', req.body?.length);
+const contentType = req.get('Content-Type') || 'audio/mpeg';
+
+
+// 1) STT
+const text = await elevenLabsSTT(req.body, contentType);
+console.log('STT text:', text);
+if (!text || !text.trim()) return res.status(200).json({ ok: true, text: '' });
+
+
+// 2) ChatGPT
+const reply = await openaiChatReply(text);
+console.log('ChatGPT reply:', reply);
+
+
+latestReply = reply;
+latestMeta.time = new Date().toISOString();
+
+
+// 3) Ask HeyGen to render this reply and return HLS stream URL
+const streamUrl = await heygenCreateStream(reply);
+console.log('HeyGen stream_url:', streamUrl);
+
+
+if (streamUrl) latestStreamUrl = streamUrl;
+
+
+return res.status(200).json({ ok: true, text, reply, stream_url: streamUrl });
+} catch (err) {
+console.error('/recall-audio error:', err?.message || err);
+return res.status(500).json({ error: err?.message || String(err) });
+}
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
