@@ -1,14 +1,13 @@
 import express from "express";
 import dotenv from "dotenv";
 import bodyParser from "body-parser";
-import fetch from "node-fetch";
-import FormData from "form-data";
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
 app.use(bodyParser.raw({ type: ["audio/*"], limit: "60mb" }));
+
 
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
