@@ -29,7 +29,7 @@ async function createHeygenSession() {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      avatar_name: "Pedro_Chair_Sitting_public", // Ensure this avatar exists in your HeyGen account
+      avatar_name: "Pedro_Chair_Sitting_public",
       quality: "high",
       background: "transparent",
     }),
@@ -125,14 +125,13 @@ app.post("/recall-audio", async (req, res) => {
         console.log("🎬 HeyGen speaking triggered successfully");
       }
 
-      // Optional: send stream URL back (e.g., for debugging)
       res.json({ status: "ok", reply, speaker });
     } catch (error) {
       console.error("💥 Error processing transcript:", error);
       res.status(500).json({ error: "Processing failed" });
     }
   } else {
-    // Ignore other event types (e.g., meeting.start, meeting.end)
+    // Ignore other event types
     console.log("⏭️ Ignored event type:", req.body.event_type);
     res.status(200).send("OK");
   }
@@ -141,5 +140,5 @@ app.post("/recall-audio", async (req, res) => {
 // 🚀 Start server
 app.listen(PORT, () => {
   console.log(`🚀 AI Avatar server running on port ${PORT}`);
-  console.log(`🔗 Webhook URL should be: https://your-deploy-url.onrender.com/recall-audio`);
+  console.log(`🔗 Webhook URL: https://avatar-server-yp11.onrender.com/recall-audio`);
 });
