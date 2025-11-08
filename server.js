@@ -1,150 +1,153 @@
 import express from "express";
 import dotenv from "dotenv";
+import axios from "axios";
+import fs from "fs";
+import path from "path";
 import bodyParser from "body-parser";
+import { fileURLToPath } from "url";
+import { v4 as uuidv4 } from "uuid";
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
-app.use(bodyParser.raw({ type: ["audio/*"], limit: "60mb" }));
-
-
 const PORT = process.env.PORT || 3000;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY;
-const SHARED_SECRET = process.env.SHARED_SECRET;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// יאוחסן כאן ה-session הפעיל
-let currentHeygenSession = null;
+// כדי לטפל בקבצי אודיו בינאריים מה-Recall bot
+app.use(bodyParser.raw({ type: "audio/*", limit: "50mb" }));
+app.use(bodyParser.json());
 
-// 🧩 פונקציה ליצירת סשן חדש ב־HeyGen
-async function createHeygenSession() {
-  console.log("🟡 Creating new HeyGen session...");
-  const response = await fetch("https://api.heygen.com/v1/streaming.create_session", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${HEYGEN_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      avatar_name: "Pedro_Chair_Sitting_public",
-      quality: "high",
-      background: "transparent",
-    }),
-  });
+// ---------------------------------------------------------
+// הגדרת נתיבי בדיקה
+// ---------------------------------------------------------
+app.get("/", (req, res) => {
+  res.send("✅ HeyGen + Recall + ElevenLabs server is running!");
+});
 
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(`HeyGen session creation failed: ${JSON.stringify(data)}`);
-  }
-
-  currentHeygenSession = {
-    session_id: data.data.session_id,
-    stream_url: data.data.stream_url,
-  };
-  console.log("✅ New HeyGen session:", currentHeygenSession);
-  return currentHeygenSession;
-}
-
-// ✅ מסלול לבדיקה
-app.get("/", (req, res) => res.send("🤖 Avatar AI Server is running."));
-
-// ✅ מסלול ליצירת סשן ידני (אופציונלי)
+// ---------------------------------------------------------
+// יצירת HeyGen streaming session (נקרא מהלקוח אם רוצים Avatar חי)
+// ---------------------------------------------------------
 app.post("/create-heygen-session", async (req, res) => {
   try {
-    const session = await createHeygenSession();
-    res.json(session);
+    const avatarId = "Pedro_Chair_Sitting_public"; // אתה כבר ציינת את זה
+    const response = await axios.post(
+      "https://api.heygen.com/v1/streaming.create_session",
+      { avatar_id: avatarId, voice_id: "en_us_001" },
+      {
+        headers: {
+          "X-API-KEY": process.env.HEYGEN_API_KEY,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const streamUrl = response.data.data.stream_url;
+    const sessionId = response.data.data.session_id;
+
+    console.log("✅ HeyGen session created:", { sessionId, streamUrl });
+    res.json({ sessionId, streamUrl });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    console.error("❌ Error creating HeyGen session:", err.response?.data || err);
+    res.status(500).json({ error: "Failed to create HeyGen session" });
   }
 });
 
-// ✅ מסלול שמופעל ע"י Recall → ElevenLabs STT → GPT → HeyGen
+// ---------------------------------------------------------
+// Webhook של Recall שמקבל אודיו תוך כדי פגישה
+// ---------------------------------------------------------
 app.post("/recall-audio", async (req, res) => {
   try {
-    const secret = req.headers["x-shared-secret"];
-    if (secret !== SHARED_SECRET) {
-      return res.status(403).json({ error: "Unauthorized - invalid shared secret" });
+    const sharedSecret = req.headers["x-shared-secret"];
+    if (sharedSecret !== process.env.SHARED_SECRET) {
+      console.log("⚠️ Invalid shared secret");
+      return res.status(403).send("Forbidden");
     }
 
-    if (!req.body || !req.body.length) {
-      return res.status(400).json({ error: "No audio data received" });
+    // שמירת הקובץ זמנית
+    const filename = `${uuidv4()}.wav`;
+    const filePath = path.join(__dirname, "temp", filename);
+    fs.mkdirSync(path.join(__dirname, "temp"), { recursive: true });
+    fs.writeFileSync(filePath, req.body);
+
+    console.log("🎧 Received audio chunk:", filename);
+
+    // -----------------------------------------------------
+    // 1️⃣ שליחה ל־ElevenLabs STT
+    // -----------------------------------------------------
+    const audioData = fs.readFileSync(filePath);
+    const sttResp = await axios.post(
+      "https://api.elevenlabs.io/v1/speech-to-text",
+      audioData,
+      {
+        headers: {
+          "xi-api-key": process.env.ELEVENLABS_API_KEY,
+          "Content-Type": "audio/wav",
+        },
+      }
+    );
+
+    const transcript = sttResp.data.text?.trim();
+    console.log("🗣️ Transcript:", transcript);
+
+    if (!transcript) {
+      fs.unlinkSync(filePath);
+      return res.status(200).send("No speech detected");
     }
 
-    console.log("🎧 Received audio from Recall, size:", req.body.length);
-
-    // 1️⃣ אם אין HeyGen session קיים – צור חדש
-    if (!currentHeygenSession) {
-      console.log("ℹ️ No active HeyGen session found, creating one...");
-      await createHeygenSession();
-    }
-
-    // 2️⃣ שלח את האודיו ל־ElevenLabs STT
-    const formData = new FormData();
-    formData.append("file", req.body, { filename: "audio.wav" });
-
-    const sttRes = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
-      method: "POST",
-      headers: { "xi-api-key": ELEVENLABS_API_KEY },
-      body: formData,
-    });
-
-    const sttData = await sttRes.json();
-    const transcription = sttData.text || "";
-    console.log("🗣️ Transcribed text:", transcription);
-
-    if (!transcription) {
-      return res.status(400).json({ error: "Could not transcribe audio" });
-    }
-
-    // 3️⃣ צור תשובה עם GPT
-    const gptRes = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+    // -----------------------------------------------------
+    // 2️⃣ שליחה ל־GPT לקבלת תגובה חכמה
+    // -----------------------------------------------------
+    const gptResp = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      {
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: "אתה דמות וידאו וירטואלית ידידותית שמדברת בעברית בצורה חמה וטבעית." },
-          { role: "user", content: transcription },
+          {
+            role: "system",
+            content: "אתה אוואטר בשם Pedro שמנהל שיחה חביבה ומנומסת.",
+          },
+          { role: "user", content: transcript },
         ],
-      }),
-    });
-
-    const gptData = await gptRes.json();
-    const reply = gptData.choices?.[0]?.message?.content || "לא הבנתי אותך, תוכל לחזור?";
-    console.log("💬 GPT reply:", reply);
-
-    // 4️⃣ תן ל־HeyGen לדבר את התשובה
-    const heygenSpeakRes = await fetch("https://api.heygen.com/v1/streaming.start_speaking", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${HEYGEN_API_KEY}`,
-        "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        session_id: currentHeygenSession.session_id,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const reply = gptResp.data.choices[0].message.content.trim();
+    console.log("🤖 GPT reply:", reply);
+
+    // -----------------------------------------------------
+    // 3️⃣ שליחה ל־HeyGen להקראת הטקסט ע״י האוואטר
+    // -----------------------------------------------------
+    await axios.post(
+      "https://api.heygen.com/v1/streaming.generate_audio",
+      {
+        session_id: process.env.HEYGEN_SESSION_ID,
         text: reply,
-      }),
-    });
+      },
+      {
+        headers: {
+          "X-API-KEY": process.env.HEYGEN_API_KEY,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
-    const heygenData = await heygenSpeakRes.json();
-    console.log("🗣️ HeyGen speaking:", heygenData);
-
-    res.json({
-      transcription,
-      gpt_reply: reply,
-      stream_url: currentHeygenSession.stream_url,
-      heygen_response: heygenData,
-    });
+    console.log("🎬 Sent reply to HeyGen Avatar");
+    fs.unlinkSync(filePath);
+    res.status(200).send("OK");
   } catch (err) {
-    console.error("❌ Error in /recall-audio:", err);
-    res.status(500).json({ error: err.message });
+    console.error("❌ Error handling audio:", err.response?.data || err);
+    res.status(500).send("Error processing audio");
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// ---------------------------------------------------------
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
