@@ -1,9 +1,8 @@
 {
   "name": "avatar-server",
   "version": "1.0.0",
-  "description": "Real-time AI avatar for Google Meet via Recall.ai → GPT → HeyGen",
-  "main": "server.js",
   "type": "module",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
