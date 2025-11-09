@@ -26,7 +26,7 @@
         audioOut.srcObject = audioStream.stream;
 
         // 🧩 מחבר אל השרת שלך (WebSocket)
-        const ws = new WebSocket("wss://YOUR-SERVER-URL-HERE/");
+        const ws = new WebSocket("wss://https://avatar-server-yp11.onrender.com/");
 
         ws.onopen = () => {
           console.log("Connected to server ✅");
