@@ -1,86 +1,66 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Realtime Voice Bot</title>
-  <style>
-    body { font-family: sans-serif; padding: 20px; }
-    #status { margin-bottom: 10px; }
-  </style>
-</head>
-<body>
-  <h2>🤖 Realtime Bot</h2>
-  <p id="status">Connecting to WebSocket...</p>
+import express from "express";
+import { WebSocketServer } from "ws";
+import dotenv from "dotenv";
+import { RealtimeClient } from "@openai/realtime-api-beta";
 
-  <script>
-    const status = document.getElementById("status");
-    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // או ws://localhost:3000 בזמן dev
+dotenv.config();
 
-    ws.onopen = () => {
-      console.log("✅ Connected to WebSocket");
-      status.textContent = "✅ Connected to WebSocket";
-    };
+const PORT = process.env.PORT || 3000;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-    ws.onclose = () => {
-      console.log("❌ Disconnected from WebSocket");
-      status.textContent = "❌ Disconnected";
-    };
+if (!OPENAI_API_KEY) {
+  console.error("Missing OPENAI_API_KEY in .env");
+  process.exit(1);
+}
 
-    ws.onerror = (err) => {
-      console.error("❌ WebSocket error", err);
-      status.textContent = "❌ WebSocket error";
-    };
+const app = express();
+app.use(express.static("public")); // מגיש את public/
 
-    const botAudio = new Audio();
-    botAudio.autoplay = true;
+const server = app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
 
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
+const wss = new WebSocketServer({ server });
 
-      // נגן את התגובה הקולית מה־API
-      if (msg.type === "output_audio_buffer.commit" && msg.audio_base64) {
-        const audioData = atob(msg.audio_base64);
-        const buffer = new Uint8Array(audioData.length);
-        for (let i = 0; i < audioData.length; i++) buffer[i] = audioData.charCodeAt(i);
-        const blob = new Blob([buffer], { type: "audio/wav" });
-        botAudio.src = URL.createObjectURL(blob);
-      }
-    };
+wss.on("connection", async (ws) => {
+  console.log("🟢 Client connected");
 
-    // קבלת אודיו מהמיקרופון ושליחה ל־OpenAI
-    async function startAudio() {
-      try {
-        const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const trackProcessor = new MediaStreamTrackProcessor({ track: mediaStream.getAudioTracks()[0] });
-        const reader = trackProcessor.readable.getReader();
+  const client = new RealtimeClient({ apiKey: OPENAI_API_KEY });
 
-        function arrayBufferToBase64(buffer) {
-          let binary = "";
-          const bytes = new Uint8Array(buffer);
-          for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-          return btoa(binary);
-        }
+  // מה־API ל־WebSocket
+  client.realtime.on("server.*", (event) => {
+    ws.send(JSON.stringify(event));
+  });
 
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (value) {
-            ws.send(JSON.stringify({
-              type: "input_audio_buffer.append",
-              audio: arrayBufferToBase64(value.data.buffer)
-            }));
-          }
-        }
+  client.realtime.on("close", () => ws.close());
 
-        // אחרי שסיימת לשלוח chunks
-        ws.send(JSON.stringify({ type: "input_audio_buffer.commit_request" }));
+  const messageQueue = [];
 
-      } catch (e) {
-        console.error("Error accessing audio:", e);
-      }
+  const handleMessage = (data) => {
+    try {
+      const event = JSON.parse(data);
+      client.realtime.send(event.type, event);
+    } catch (e) {
+      console.error("Error parsing message:", e);
     }
+  };
 
-    startAudio();
-  </script>
-</body>
-</html>
+  ws.on("message", (data) => {
+    if (!client.isConnected()) messageQueue.push(data);
+    else handleMessage(data);
+  });
+
+  ws.on("close", () => client.disconnect());
+
+  try {
+    await client.connect();
+    console.log("✅ Connected to OpenAI Realtime");
+
+    while (messageQueue.length) {
+      handleMessage(messageQueue.shift());
+    }
+  } catch (e) {
+    console.error("Error connecting to OpenAI:", e);
+    ws.close();
+  }
+});
