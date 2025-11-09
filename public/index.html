@@ -3,37 +3,51 @@
 <head>
   <meta charset="UTF-8">
   <title>Realtime Voice Bot</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    #status { margin-bottom: 10px; }
+  </style>
 </head>
 <body>
-  <h2>🤖 Realtime Bot is running...</h2>
+  <h2>🤖 Realtime Bot</h2>
   <p id="status">Connecting to WebSocket...</p>
 
   <script>
     const status = document.getElementById("status");
-    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
+    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // או ws://localhost:3000 בזמן dev
 
     ws.onopen = () => {
-      console.log("✅ Connected to server!");
-      status.textContent = "Connected to WebSocket";
+      console.log("✅ Connected to WebSocket");
+      status.textContent = "✅ Connected to WebSocket";
     };
 
     ws.onclose = () => {
-      console.log("❌ Disconnected from server");
-      status.textContent = "Disconnected";
+      console.log("❌ Disconnected from WebSocket");
+      status.textContent = "❌ Disconnected";
     };
 
     ws.onerror = (err) => {
       console.error("❌ WebSocket error", err);
-      status.textContent = "WebSocket error";
+      status.textContent = "❌ WebSocket error";
     };
+
+    const botAudio = new Audio();
+    botAudio.autoplay = true;
 
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
-      // כאן אפשר להוסיף קוד לנגן קול שהשרת מחזיר
-      console.log("Message from server:", msg);
+
+      // נגן את התגובה הקולית מה־API
+      if (msg.type === "output_audio_buffer.commit" && msg.audio_base64) {
+        const audioData = atob(msg.audio_base64);
+        const buffer = new Uint8Array(audioData.length);
+        for (let i = 0; i < audioData.length; i++) buffer[i] = audioData.charCodeAt(i);
+        const blob = new Blob([buffer], { type: "audio/wav" });
+        botAudio.src = URL.createObjectURL(blob);
+      }
     };
 
-    // דוגמא של קוד שמקבל AudioData מהפגישה ומשלח לשרת
+    // קבלת אודיו מהמיקרופון ושליחה ל־OpenAI
     async function startAudio() {
       try {
         const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -43,9 +57,7 @@
         function arrayBufferToBase64(buffer) {
           let binary = "";
           const bytes = new Uint8Array(buffer);
-          for (let i = 0; i < bytes.byteLength; i++) {
-            binary += String.fromCharCode(bytes[i]);
-          }
+          for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
           return btoa(binary);
         }
 
@@ -55,10 +67,14 @@
           if (value) {
             ws.send(JSON.stringify({
               type: "input_audio_buffer.append",
-              audio: arrayBufferToBase64(value.data.buffer),
+              audio: arrayBufferToBase64(value.data.buffer)
             }));
           }
         }
+
+        // אחרי שסיימת לשלוח chunks
+        ws.send(JSON.stringify({ type: "input_audio_buffer.commit_request" }));
+
       } catch (e) {
         console.error("Error accessing audio:", e);
       }
