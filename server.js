@@ -14,16 +14,12 @@ if (!OPENAI_API_KEY) {
 }
 
 const app = express();
-
-// מגיש את public/
 app.use(express.static("public"));
 
-// יוצר HTTP server
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-// יוצר WebSocket על אותו server
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", async (ws) => {
@@ -36,16 +32,19 @@ wss.on("connection", async (ws) => {
     ws.send(JSON.stringify(event));
   });
 
-  client.realtime.on("close", () => {
-    ws.close();
-  });
+  client.realtime.on("close", () => ws.close());
 
-  // מהלקוח ל־OpenAI Realtime
   const messageQueue = [];
+
   const handleMessage = (data) => {
     try {
       const event = JSON.parse(data);
       client.realtime.send(event.type, event);
+
+      // אם מדובר בקטע אודיו append – אפשר לשלוח commit מיד או בסיום
+      if (event.type === "input_audio_buffer.commit_request") {
+        client.realtime.send("input_audio_buffer.commit");
+      }
     } catch (e) {
       console.error("Error parsing message:", e);
     }
@@ -64,6 +63,7 @@ wss.on("connection", async (ws) => {
   try {
     await client.connect();
     console.log("✅ Connected to OpenAI Realtime");
+
     while (messageQueue.length) {
       handleMessage(messageQueue.shift());
     }
