@@ -14,7 +14,7 @@ if (!OPENAI_API_KEY) {
 }
 
 const app = express();
-app.use(express.static("public"));
+app.use(express.static("public")); // מגיש את public/
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
@@ -27,7 +27,7 @@ wss.on("connection", async (ws) => {
 
   const client = new RealtimeClient({ apiKey: OPENAI_API_KEY });
 
-  // מהשרת ללקוח (index.html)
+  // מה־API ל־WebSocket
   client.realtime.on("server.*", (event) => {
     ws.send(JSON.stringify(event));
   });
@@ -40,22 +40,14 @@ wss.on("connection", async (ws) => {
     try {
       const event = JSON.parse(data);
       client.realtime.send(event.type, event);
-
-      // אם מדובר בקטע אודיו append – אפשר לשלוח commit מיד או בסיום
-      if (event.type === "input_audio_buffer.commit_request") {
-        client.realtime.send("input_audio_buffer.commit");
-      }
     } catch (e) {
       console.error("Error parsing message:", e);
     }
   };
 
   ws.on("message", (data) => {
-    if (!client.isConnected()) {
-      messageQueue.push(data);
-    } else {
-      handleMessage(data);
-    }
+    if (!client.isConnected()) messageQueue.push(data);
+    else handleMessage(data);
   });
 
   ws.on("close", () => client.disconnect());
