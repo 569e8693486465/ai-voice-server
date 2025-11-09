@@ -1,86 +1,70 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>Realtime Voice Bot</title>
-  </head>
-  <body>
-    <h2>🤖 Realtime Bot is running...</h2>
-    <p id="status">Connecting to meeting audio...</p>
+<head>
+  <meta charset="UTF-8">
+  <title>Realtime Voice Bot</title>
+</head>
+<body>
+  <h2>🤖 Realtime Bot is running...</h2>
+  <p id="status">Connecting to WebSocket...</p>
 
-    <script>
-      async function start() {
-        const status = document.getElementById("status");
+  <script>
+    const status = document.getElementById("status");
+    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
 
-        // 🎙️ מקבל את האודיו מהפגישה (Recall.ai כבר נותן הרשאה)
+    ws.onopen = () => {
+      console.log("✅ Connected to server!");
+      status.textContent = "Connected to WebSocket";
+    };
+
+    ws.onclose = () => {
+      console.log("❌ Disconnected from server");
+      status.textContent = "Disconnected";
+    };
+
+    ws.onerror = (err) => {
+      console.error("❌ WebSocket error", err);
+      status.textContent = "WebSocket error";
+    };
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      // כאן אפשר להוסיף קוד לנגן קול שהשרת מחזיר
+      console.log("Message from server:", msg);
+    };
+
+    // דוגמא של קוד שמקבל AudioData מהפגישה ומשלח לשרת
+    async function startAudio() {
+      try {
         const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const meetingAudioTrack = mediaStream.getAudioTracks()[0];
-
-        const trackProcessor = new MediaStreamTrackProcessor({ track: meetingAudioTrack });
+        const trackProcessor = new MediaStreamTrackProcessor({ track: mediaStream.getAudioTracks()[0] });
         const reader = trackProcessor.readable.getReader();
 
-        // 🎧 מנגן את הקול של ה-AI חזרה בפגישה
-        const audioOut = new Audio();
-        const audioContext = new AudioContext();
-        const audioStream = audioContext.createMediaStreamDestination();
-        audioOut.srcObject = audioStream.stream;
-
-        // 🧩 מחבר אל השרת שלך (WebSocket)
-        const ws = new WebSocket("wss://https://avatar-server-yp11.onrender.com/");
-
-        ws.onopen = () => {
-          console.log("Connected to server ✅");
-          status.textContent = "Connected to Realtime API";
-        };
-
-        ws.onmessage = async (event) => {
-          const msg = JSON.parse(event.data);
-
-          // אם OpenAI מחזיר אודיו
-          if (msg.type === "output_audio_buffer.delta" && msg.delta) {
-            const audioBytes = Uint8Array.from(atob(msg.delta), (c) => c.charCodeAt(0));
-            const audioBuffer = await audioContext.decodeAudioData(audioBytes.buffer);
-            const source = audioContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(audioContext.destination);
-            source.start();
+        function arrayBufferToBase64(buffer) {
+          let binary = "";
+          const bytes = new Uint8Array(buffer);
+          for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
           }
-        };
+          return btoa(binary);
+        }
 
-        ws.onclose = () => {
-          console.log("Disconnected ❌");
-          status.textContent = "Disconnected from server.";
-        };
-
-        // 🎤 שולח כל מקטע קול אל השרת שלך (שיעביר לאופן איי איי)
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
           if (value) {
-            ws.send(
-              JSON.stringify({
-                type: "input_audio_buffer.append",
-                audio: arrayBufferToBase64(value.data.buffer),
-              })
-            );
+            ws.send(JSON.stringify({
+              type: "input_audio_buffer.append",
+              audio: arrayBufferToBase64(value.data.buffer),
+            }));
           }
         }
+      } catch (e) {
+        console.error("Error accessing audio:", e);
       }
+    }
 
-      // ממיר אודיו ל-base64 כדי לשלוח ב-WebSocket
-      function arrayBufferToBase64(buffer) {
-        let binary = "";
-        const bytes = new Uint8Array(buffer);
-        for (let i = 0; i < bytes.byteLength; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        return btoa(binary);
-      }
-
-      start().catch((err) => {
-        console.error("Error starting bot:", err);
-        document.getElementById("status").textContent = "Error: " + err.message;
-      });
-    </script>
-  </body>
+    startAudio();
+  </script>
+</body>
 </html>
