@@ -1,66 +1,94 @@
-import express from "express";
-import { WebSocketServer } from "ws";
-import dotenv from "dotenv";
-import { RealtimeClient } from "@openai/realtime-api-beta";
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Realtime Voice Bot</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    #status { margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <h2>🤖 Realtime Bot</h2>
+  <p id="status">Connecting to WebSocket...</p>
 
-dotenv.config();
+  <script>
+    const status = document.getElementById("status");
+    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // או ws://localhost:3000 בזמן dev
 
-const PORT = process.env.PORT || 3000;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    ws.onopen = () => {
+      console.log("✅ Connected to WebSocket");
+      status.textContent = "✅ Connected to WebSocket";
+    };
 
-if (!OPENAI_API_KEY) {
-  console.error("Missing OPENAI_API_KEY in .env");
-  process.exit(1);
-}
+    ws.onclose = () => {
+      console.log("❌ Disconnected");
+      status.textContent = "❌ Disconnected";
+    };
 
-const app = express();
-app.use(express.static("public")); // מגיש את public/
+    ws.onerror = (err) => {
+      console.error("❌ WebSocket error", err);
+      status.textContent = "❌ WebSocket error";
+    };
 
-const server = app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+    // AudioContext לניגון בזמן אמת
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-const wss = new WebSocketServer({ server });
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
 
-wss.on("connection", async (ws) => {
-  console.log("🟢 Client connected");
+      if (msg.type === "output_audio_buffer.chunk" && msg.audio_base64) {
+        const audioData = atob(msg.audio_base64);
+        const buffer = new Uint8Array(audioData.length);
+        for (let i = 0; i < audioData.length; i++) buffer[i] = audioData.charCodeAt(i);
 
-  const client = new RealtimeClient({ apiKey: OPENAI_API_KEY });
+        audioCtx.decodeAudioData(buffer.buffer, (decoded) => {
+          const source = audioCtx.createBufferSource();
+          source.buffer = decoded;
+          source.connect(audioCtx.destination);
+          source.start();
+        });
+      }
+    };
 
-  // מה־API ל־WebSocket
-  client.realtime.on("server.*", (event) => {
-    ws.send(JSON.stringify(event));
-  });
+    async function startAudio() {
+      try {
+        const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const trackProcessor = new MediaStreamTrackProcessor({ track: mediaStream.getAudioTracks()[0] });
+        const reader = trackProcessor.readable.getReader();
 
-  client.realtime.on("close", () => ws.close());
+        function float32ToBase64(float32Array) {
+          let binary = "";
+          const view = new DataView(float32Array.buffer);
+          for (let i = 0; i < view.byteLength; i += 2) {
+            // convert float to PCM16
+            const s = Math.max(-1, Math.min(1, float32Array[i/2]));
+            view.setInt16(i, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+          }
+          for (let i = 0; i < view.byteLength; i++) binary += String.fromCharCode(view.getUint8(i));
+          return btoa(binary);
+        }
 
-  const messageQueue = [];
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) {
+            ws.send(JSON.stringify({
+              type: "input_audio_buffer.append",
+              audio: float32ToBase64(value.data)
+            }));
+          }
+        }
 
-  const handleMessage = (data) => {
-    try {
-      const event = JSON.parse(data);
-      client.realtime.send(event.type, event);
-    } catch (e) {
-      console.error("Error parsing message:", e);
+        // אחרי סיום שליחת chunks
+        ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+
+      } catch (e) {
+        console.error("Error accessing audio:", e);
+      }
     }
-  };
 
-  ws.on("message", (data) => {
-    if (!client.isConnected()) messageQueue.push(data);
-    else handleMessage(data);
-  });
-
-  ws.on("close", () => client.disconnect());
-
-  try {
-    await client.connect();
-    console.log("✅ Connected to OpenAI Realtime");
-
-    while (messageQueue.length) {
-      handleMessage(messageQueue.shift());
-    }
-  } catch (e) {
-    console.error("Error connecting to OpenAI:", e);
-    ws.close();
-  }
-});
+    startAudio();
+  </script>
+</body>
+</html>
