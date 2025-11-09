@@ -14,11 +14,13 @@
 
   <script>
     const status = document.getElementById("status");
-    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // או ws://localhost:3000 בזמן dev
+
+    // חיבור ל־WebSocket של השרת שלנו
+    const ws = new WebSocket(`ws://${window.location.host}/`);
 
     ws.onopen = () => {
       console.log("✅ Connected to WebSocket");
-      status.textContent = "✅ Connected to WebSocket";
+      status.textContent = "✅ Connected";
     };
 
     ws.onclose = () => {
@@ -51,36 +53,50 @@
       }
     };
 
+    // פונקציה להמרת Float32Array ל־PCM16Base64
+    function float32ToPCM16Base64(float32Array) {
+      const buffer = new ArrayBuffer(float32Array.length * 2);
+      const view = new DataView(buffer);
+      let offset = 0;
+      for (let i = 0; i < float32Array.length; i++) {
+        let s = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+        offset += 2;
+      }
+      let binary = "";
+      const bytes = new Uint8Array(buffer);
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary);
+    }
+
     async function startAudio() {
       try {
         const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const trackProcessor = new MediaStreamTrackProcessor({ track: mediaStream.getAudioTracks()[0] });
         const reader = trackProcessor.readable.getReader();
 
-        function float32ToBase64(float32Array) {
-          let binary = "";
-          const view = new DataView(float32Array.buffer);
-          for (let i = 0; i < view.byteLength; i += 2) {
-            // convert float to PCM16
-            const s = Math.max(-1, Math.min(1, float32Array[i/2]));
-            view.setInt16(i, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-          }
-          for (let i = 0; i < view.byteLength; i++) binary += String.fromCharCode(view.getUint8(i));
-          return btoa(binary);
-        }
+        // שולח commit כל 200ms כדי שהבוט יתחיל לדבר תוך כדי
+        let lastCommit = Date.now();
+        const commitInterval = 200;
 
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
+
           if (value) {
             ws.send(JSON.stringify({
               type: "input_audio_buffer.append",
-              audio: float32ToBase64(value.data)
+              audio: float32ToPCM16Base64(value.data)
             }));
+
+            if (Date.now() - lastCommit > commitInterval) {
+              ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+              lastCommit = Date.now();
+            }
           }
         }
 
-        // אחרי סיום שליחת chunks
+        // סיום שליחת אודיו
         ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
 
       } catch (e) {
