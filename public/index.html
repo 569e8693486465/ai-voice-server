@@ -15,18 +15,25 @@
 
   <script>
     const status = document.getElementById("status");
-    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // URL של Render
+    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // Render URL או localhost
 
-    ws.onopen = () => { status.textContent = "✅ Connected to WebSocket"; }
-    ws.onclose = () => { status.textContent = "❌ Disconnected"; }
-    ws.onerror = (err) => { console.error(err); status.textContent = "❌ WebSocket error"; }
+    ws.onopen = () => {
+      console.log("✅ Connected to WebSocket");
+      status.textContent = "✅ Connected";
+    };
+    ws.onclose = () => {
+      console.log("❌ Disconnected");
+      status.textContent = "❌ Disconnected";
+    };
+    ws.onerror = (err) => {
+      console.error("❌ WebSocket error", err);
+      status.textContent = "❌ WebSocket error";
+    };
 
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
-
-      // השמעת תגובות קוליות מה־Realtime API
       if (msg.type === "output_audio_buffer.chunk" && msg.audio_base64) {
         const audioData = atob(msg.audio_base64);
         const buffer = new Uint8Array(audioData.length);
