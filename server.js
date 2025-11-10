@@ -7,10 +7,9 @@ dotenv.config();
 
 const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const RECALL_API_KEY = process.env.RECALL_API_KEY; // Add this
 
-if (!OPENAI_API_KEY || !RECALL_API_KEY) {
-  console.error("Missing API keys in .env");
+if (!OPENAI_API_KEY) {
+  console.error("Missing OPENAI_API_KEY in .env");
   process.exit(1);
 }
 
@@ -26,83 +25,93 @@ const wss = new WebSocketServer({ server });
 wss.on("connection", async (ws) => {
   console.log("🟢 Client connected");
 
-  const client = new RealtimeClient({ apiKey: OPENAI_API_KEY });
-
-  // Handle ALL OpenAI events - forward everything to client
-  client.realtime.on("server.*", (event) => {
-    console.log("OpenAI Event:", event.type);
-    ws.send(JSON.stringify(event));
-  });
-
-  client.realtime.on("error", (error) => {
-    console.error("OpenAI error:", error);
-    ws.send(JSON.stringify({ type: "error", error: error.message }));
-  });
-
-  client.realtime.on("close", () => {
-    console.log("OpenAI connection closed");
-  });
-
   try {
+    console.log("🔸 Creating OpenAI RealtimeClient...");
+    const client = new RealtimeClient({ 
+      apiKey: OPENAI_API_KEY,
+    });
+
+    // Add detailed event logging
+    client.realtime.on("session.created", (event) => {
+      console.log("✅ session.created");
+    });
+
+    client.realtime.on("session.updated", (event) => {
+      console.log("✅ session.updated");
+    });
+
+    client.realtime.on("input_audio_buffer.committed", (event) => {
+      console.log("🎤 input_audio_buffer.committed");
+    });
+
+    client.realtime.on("response.audio.delta", (event) => {
+      console.log("🔊 response.audio.delta - AI speaking!");
+    });
+
+    client.realtime.on("response.audio_transcript.delta", (event) => {
+      console.log("💬 AI transcript:", event.delta);
+    });
+
+    client.realtime.on("error", (error) => {
+      console.error("🔴 OpenAI Error:", error);
+      console.error("Error details:", JSON.stringify(error, null, 2));
+    });
+
+    client.realtime.on("close", (event) => {
+      console.log("🟠 OpenAI connection closed:", event);
+    });
+
+    // Connect to OpenAI
+    console.log("🔸 Connecting to OpenAI...");
     await client.connect();
     console.log("✅ Connected to OpenAI Realtime");
-    
-    // Better session configuration
+
+    // Use minimal session configuration
+    console.log("🔸 Configuring session...");
     await client.realtime.send('session.update', {
-      modalities: ['text', 'audio'],
-      instructions: 'You are a helpful meeting assistant. Respond briefly and professionally. Keep responses under 10 seconds.',
+      modalities: ['audio'],
       voice: 'alloy',
       input_audio_format: 'pcm16',
-      output_audio_format: 'pcm16',
-      input_audio_transcription: { 
-        model: 'whisper-1'
-      },
-      turn_detection: {
-        type: 'server_vad',
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 500
+      output_audio_format: 'pcm16'
+    });
+    console.log("✅ Session configured");
+
+    // Set up message handling AFTER successful connection
+    ws.on("message", async (data) => {
+      try {
+        const msg = JSON.parse(data);
+        
+        if (msg.type === "meeting_audio") {
+          console.log("🎤 Received audio chunk:", msg.audio.length, "bytes");
+          
+          // Send audio to OpenAI
+          client.realtime.send("input_audio_buffer.append", {
+            audio: msg.audio
+          });
+          
+          // Commit to trigger processing
+          client.realtime.send("input_audio_buffer.commit", {});
+        }
+        
+      } catch (e) {
+        console.error("Error processing message:", e);
       }
     });
 
-    console.log("✅ Session configured");
+    ws.on("close", () => {
+      console.log("🔴 Client WebSocket closed");
+      client.disconnect();
+    });
+
+    // Send ready signal to client
+    ws.send(JSON.stringify({ type: "ready", status: "connected" }));
 
   } catch (error) {
-    console.error("Failed to connect to OpenAI:", error);
-    ws.send(JSON.stringify({ type: "error", error: "OpenAI connection failed" }));
+    console.error("❌ Failed to setup OpenAI:", error);
+    console.error("Stack:", error.stack);
+    ws.send(JSON.stringify({ 
+      type: "error", 
+      error: "Setup failed: " + error.message 
+    }));
   }
-
-  ws.on("message", async (data) => {
-    try {
-      const msg = JSON.parse(data);
-      console.log("Received message type:", msg.type);
-      
-      if (msg.type === "meeting_audio") {
-        // Send audio to OpenAI
-        client.realtime.send("input_audio_buffer.append", {
-          audio: msg.audio
-        });
-        
-        // Don't commit immediately - let OpenAI handle VAD
-        // client.realtime.send("input_audio_buffer.commit", {});
-        
-      } else if (msg.type === "meeting_transcript") {
-        console.log("Sending transcript to OpenAI:", msg.text);
-        // Send transcript as text input
-        client.realtime.send("conversation.item.create", {
-          type: "message",
-          role: "user", 
-          content: [{ type: "input_text", text: msg.text }]
-        });
-      }
-      
-    } catch (e) {
-      console.error("Error processing message:", e);
-    }
-  });
-
-  ws.on("close", () => {
-    console.log("Client disconnected");
-    client.disconnect();
-  });
 });
