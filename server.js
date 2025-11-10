@@ -14,7 +14,7 @@ if (!OPENAI_API_KEY) {
 }
 
 const app = express();
-app.use(express.static("public"));
+app.use(express.static("public")); // serve your index.html from /public
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
@@ -27,38 +27,25 @@ wss.on("connection", async (ws) => {
 
   const client = new RealtimeClient({ apiKey: OPENAI_API_KEY });
 
-  client.realtime.on("server.*", (event) => ws.send(JSON.stringify(event)));
-  client.realtime.on("close", () => ws.close());
-
-  const messageQueue = [];
-
-  ws.on("message", (data) => {
-    if (!client.isConnected()) messageQueue.push(data);
-    else handleMessage(data);
+  client.realtime.on("server.*", (event) => {
+    ws.send(JSON.stringify(event));
   });
 
-  ws.on("close", () => client.disconnect());
+  client.realtime.on("close", () => ws.close());
 
-  const handleMessage = (data) => {
+  await client.connect();
+  console.log("✅ Connected to OpenAI Realtime");
+
+  ws.on("message", (data) => {
     try {
-      const event = JSON.parse(data);
-      client.realtime.send(event.type, event);
+      const msg = JSON.parse(data);
+      if (msg.type === "input_audio_buffer.append" || msg.type === "input_audio_buffer.commit") {
+        client.realtime.send(msg.type, msg);
+      }
     } catch (e) {
       console.error("Error parsing message:", e);
     }
-  };
+  });
 
-  try {
-    await client.connect();
-    console.log("✅ Connected to OpenAI Realtime");
-
-    // שליחת הודעת בדיקה
-    client.sendUserMessageContent([{ type: "input_text", text: "Hello!" }]);
-    client.updateSession({ turn_detection: { type: "server_vad" } });
-
-    while (messageQueue.length) handleMessage(messageQueue.shift());
-  } catch (e) {
-    console.error("Error connecting to OpenAI:", e);
-    ws.close();
-  }
+  ws.on("close", () => client.disconnect());
 });
