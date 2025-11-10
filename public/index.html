@@ -17,7 +17,7 @@
     const status = document.getElementById("status");
 
     // WebSocket לשרת שלך
-    const ws = new WebSocket("wss://YOUR_SERVER_URL"); // החלף ל־URL של Render / localhost:3000
+    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // החלף ל־URL של Render / localhost:3000
 
     ws.onopen = () => {
       console.log("✅ Connected to WebSocket");
