@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Realtime AI Bot</title>
+  <title>Realtime AI Bot - GA API</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -32,10 +32,23 @@
       min-height: 60px;
       white-space: pre-wrap;
     }
+    .audio-visualizer {
+      height: 20px;
+      background: #e9ecef;
+      border-radius: 10px;
+      margin: 10px 0;
+      overflow: hidden;
+    }
+    .audio-level {
+      height: 100%;
+      background: linear-gradient(90deg, #28a745, #ffc107, #dc3545);
+      width: 0%;
+      transition: width 0.1s ease;
+    }
   </style>
 </head>
 <body>
-<h2>🤖 Realtime AI Bot</h2>
+<h2>🤖 Realtime AI Bot - GA API</h2>
 
 <div id="statusBox" class="status-box">
   <strong>Status:</strong> <span id="status">Connecting to WebSocket...</span>
@@ -43,6 +56,9 @@
 
 <div id="audioBox" class="status-box">
   <strong>Audio:</strong> <span id="audioStatus">Initializing...</span>
+  <div class="audio-visualizer">
+    <div id="audioLevel" class="audio-level"></div>
+  </div>
 </div>
 
 <div id="aiBox" class="status-box">
@@ -51,7 +67,7 @@
 
 <div class="status-box">
   <strong>Debug Info:</strong>
-  <div id="debug">Initializing...</div>
+  <div id="debug">Initializing GA API connection...</div>
 </div>
 
 <script>
@@ -59,6 +75,7 @@ const status = document.getElementById("status");
 const audioStatus = document.getElementById("audioStatus");
 const aiStatus = document.getElementById("aiStatus");
 const debugEl = document.getElementById("debug");
+const audioLevel = document.getElementById("audioLevel");
 const statusBox = document.getElementById("statusBox");
 const audioBox = document.getElementById("audioBox");
 const aiBox = document.getElementById("aiBox");
@@ -66,6 +83,7 @@ const aiBox = document.getElementById("aiBox");
 let audioContext;
 let isAudioProcessing = false;
 let audioChunkCount = 0;
+let lastAudioTime = 0;
 
 // Update debug display
 function updateDebug(message) {
@@ -78,14 +96,20 @@ function updateStatus(element, type) {
   element.className = 'status-box ' + type;
 }
 
+// Update audio level visualizer
+function updateAudioLevel(level) {
+  const width = Math.min(100, level * 500); // Scale the level
+  audioLevel.style.width = width + '%';
+}
+
 // Connect to your server
-updateDebug("Connecting to WebSocket...");
+updateDebug("Connecting to WebSocket server...");
 const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
 
 ws.onopen = () => {
   status.textContent = "✅ Connected to WebSocket";
   updateStatus(statusBox, 'status-connected');
-  updateDebug("WebSocket connected successfully");
+  updateDebug("WebSocket connected successfully - waiting for OpenAI...");
   initializeAudio();
 };
 
@@ -102,24 +126,26 @@ ws.onerror = (err) => {
   console.error("WebSocket error:", err);
 };
 
-// Handle ALL responses from OpenAI and server
+// Handle ALL responses from OpenAI GA API
 ws.onmessage = (event) => {
   try {
     const msg = JSON.parse(event.data);
-    console.log("Received event:", msg.type, msg);
+    console.log("Received GA API event:", msg.type, msg);
     
     if (msg.type === "ready") {
       aiStatus.textContent = "✅ Ready and listening";
       updateStatus(aiBox, 'status-connected');
-      updateDebug("OpenAI connected and ready");
+      updateDebug("OpenAI GA API connected and ready");
     }
-    else if (msg.type === "response.audio.delta" && msg.delta) {
+    // UPDATED FOR GA API: response.output_audio.delta
+    else if (msg.type === "response.output_audio.delta" && msg.delta) {
       aiStatus.textContent = "🔊 Speaking...";
       updateStatus(aiBox, 'status-processing');
-      updateDebug("AI audio response received");
+      updateDebug("AI audio response received from GA API");
       playAudioChunk(msg.delta);
     } 
-    else if (msg.type === "response.audio_transcript.delta" && msg.delta) {
+    // UPDATED FOR GA API: response.output_audio_transcript.delta
+    else if (msg.type === "response.output_audio_transcript.delta" && msg.delta) {
       aiStatus.textContent = "💬 " + msg.delta;
       updateDebug("AI transcript: " + msg.delta);
       console.log("AI is saying:", msg.delta);
@@ -129,20 +155,20 @@ ws.onmessage = (event) => {
       updateStatus(aiBox, 'status-connected');
       updateDebug("AI response completed");
     }
-    else if (msg.type === "input_audio_buffer.committed") {
-      updateDebug("Audio committed to OpenAI for processing");
-    }
     else if (msg.type === "session.updated") {
-      updateDebug("OpenAI session configured");
+      updateDebug("OpenAI GA API session configured");
+    }
+    else if (msg.type === "input_audio_buffer.committed") {
+      updateDebug("Audio committed to OpenAI GA API");
     }
     else if (msg.type === "error") {
       aiStatus.textContent = "❌ AI Error";
       updateStatus(aiBox, 'status-error');
-      updateDebug("Error: " + msg.error);
+      updateDebug("GA API Error: " + msg.error);
       console.error("Server error:", msg.error);
     }
     else {
-      updateDebug("Received event: " + msg.type);
+      updateDebug("Received GA API event: " + msg.type);
     }
     
   } catch (error) {
@@ -177,7 +203,7 @@ function playAudioChunk(base64Audio) {
     source.connect(audioContext.destination);
     source.start();
     
-    updateDebug("✅ Played audio chunk: " + audioData.length + " bytes");
+    updateDebug("✅ Played AI audio: " + audioData.length + " bytes");
     
   } catch (error) {
     console.error("❌ Error playing audio:", error);
@@ -206,7 +232,7 @@ async function initializeAudio() {
   try {
     audioStatus.textContent = "🎤 Requesting microphone access...";
     updateStatus(audioBox, 'status-processing');
-    updateDebug("Initializing audio system...");
+    updateDebug("Initializing audio system for GA API...");
     
     // Get meeting audio stream (automatically provided by Recall.ai)
     const mediaStream = await navigator.mediaDevices.getUserMedia({ 
@@ -221,7 +247,7 @@ async function initializeAudio() {
     
     audioStatus.textContent = "✅ Microphone access granted";
     updateStatus(audioBox, 'status-connected');
-    updateDebug("Microphone access granted - starting audio processing");
+    updateDebug("Microphone access granted - starting audio processing for GA API");
     
     // Initialize audio context
     audioContext = new AudioContext({ sampleRate: 24000 });
@@ -237,27 +263,37 @@ async function initializeAudio() {
       try {
         const inputData = event.inputBuffer.getChannelData(0);
         
-        // Check if there's actual audio (not silence)
-        let hasAudio = false;
+        // Calculate audio level for visualization
         let sum = 0;
         for (let i = 0; i < inputData.length; i++) {
           sum += Math.abs(inputData[i]);
         }
         const average = sum / inputData.length;
+        updateAudioLevel(average);
+        
+        // Check if there's actual audio (not silence)
+        let hasAudio = false;
+        for (let i = 0; i < inputData.length; i++) {
+          if (Math.abs(inputData[i]) > 0.01) {
+            hasAudio = true;
+            break;
+          }
+        }
         
         // Only send if audio is above threshold (speech detected)
-        if (average > 0.02) {
+        if (hasAudio && average > 0.02) {
           const audioBase64 = float32ToPCM16(inputData);
           ws.send(JSON.stringify({ 
             type: "meeting_audio", 
             audio: audioBase64 
           }));
           audioChunkCount++;
+          lastAudioTime = Date.now();
           
           // Update audio status periodically
           if (audioChunkCount % 10 === 0) {
             audioStatus.textContent = `✅ Streaming audio (${audioChunkCount} chunks)`;
-            updateDebug(`Audio chunk ${audioChunkCount} sent (volume: ${Math.round(average * 100)}%)`);
+            updateDebug(`Audio chunk ${audioChunkCount} sent to GA API (volume: ${Math.round(average * 100)}%)`);
           }
         }
       } catch (error) {
@@ -271,8 +307,8 @@ async function initializeAudio() {
     source.connect(processor);
     processor.connect(audioContext.destination);
     
-    updateDebug("✅ Audio processing started successfully");
-    console.log("✅ Audio streaming started");
+    updateDebug("✅ Audio processing started successfully for GA API");
+    console.log("✅ Audio streaming started for GA API");
 
   } catch (error) {
     console.error("❌ Error accessing meeting audio:", error);
@@ -307,9 +343,19 @@ setTimeout(() => {
 setInterval(() => {
   if (ws.readyState === WebSocket.OPEN) {
     const now = new Date().toLocaleTimeString();
-    updateDebug(`Heartbeat - ${now} - Audio chunks: ${audioChunkCount}`);
+    const timeSinceAudio = Date.now() - lastAudioTime;
+    const statusMsg = timeSinceAudio < 5000 ? "Active" : "Waiting for speech";
+    updateDebug(`Heartbeat - ${now} - Audio chunks: ${audioChunkCount} - Status: ${statusMsg}`);
   }
 }, 30000);
+
+// Reset audio level visualizer when no audio
+setInterval(() => {
+  const timeSinceAudio = Date.now() - lastAudioTime;
+  if (timeSinceAudio > 1000) {
+    updateAudioLevel(0);
+  }
+}, 100);
 </script>
 </body>
 </html>
