@@ -31,29 +31,24 @@ wss.on("connection", async (ws) => {
       apiKey: OPENAI_API_KEY,
     });
 
-    // Add detailed event logging for ALL events
+    // Log ALL events to see what's happening
     client.realtime.on("*", (event) => {
-      console.log(`🔵 ${event.type}`, event);
+      console.log(`🔵 ${event.type}`);
+      
+      // Forward ALL events to the client
+      ws.send(JSON.stringify(event));
     });
 
     client.realtime.on("response.audio.delta", (event) => {
-      console.log("🔊 AI Audio Response Received!");
-      ws.send(JSON.stringify(event));
+      console.log("🔊 AI Audio Response Received!", event.delta ? "Has audio" : "No audio");
     });
 
     client.realtime.on("response.audio_transcript.delta", (event) => {
       console.log("💬 AI Transcript:", event.delta);
-      ws.send(JSON.stringify(event));
-    });
-
-    client.realtime.on("response.done", (event) => {
-      console.log("✅ Response completed");
-      ws.send(JSON.stringify(event));
     });
 
     client.realtime.on("error", (error) => {
       console.error("🔴 OpenAI Error:", error);
-      ws.send(JSON.stringify({ type: "error", error: error.message }));
     });
 
     // Connect to OpenAI
@@ -61,21 +56,25 @@ wss.on("connection", async (ws) => {
     await client.connect();
     console.log("✅ Connected to OpenAI Realtime");
 
-    // Configure session with conversation settings
+    // Configure session with BOTH text and audio
     console.log("🔸 Configuring session...");
     await client.realtime.send('session.update', {
-      modalities: ['text', 'audio'],
-      instructions: 'You are a helpful meeting assistant. Respond briefly and conversationally. Keep responses under 10 words.',
+      modalities: ['text', 'audio'], // חשוב: גם טקסט גם אודיו
+      instructions: 'You are a helpful meeting assistant. Respond briefly in conversation. When someone speaks to you, answer them directly and conversationally. Keep responses under 10 words.',
       voice: 'alloy',
       input_audio_format: 'pcm16',
       output_audio_format: 'pcm16',
-      turn_detection: null, // Let client control when to process
-      temperature: 0.8
+      turn_detection: {
+        type: 'server_vad',
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 1000
+      }
     });
     console.log("✅ Session configured");
 
     let audioBuffer = [];
-    let isProcessing = false;
+    let commitTimer = null;
 
     // Set up message handling
     ws.on("message", async (data) => {
@@ -83,43 +82,42 @@ wss.on("connection", async (ws) => {
         const msg = JSON.parse(data);
         
         if (msg.type === "meeting_audio") {
-          // Add audio to buffer
-          audioBuffer.push(msg.audio);
+          // Send audio immediately without buffering
+          client.realtime.send("input_audio_buffer.append", {
+            audio: msg.audio
+          });
           
-          // If we have enough audio chunks, process them
-          if (audioBuffer.length >= 10 && !isProcessing) { // Process every 10 chunks
-            isProcessing = true;
-            
-            console.log(`🎤 Processing ${audioBuffer.length} audio chunks...`);
-            
-            // Send all buffered audio
-            for (const audioChunk of audioBuffer) {
-              client.realtime.send("input_audio_buffer.append", {
-                audio: audioChunk
-              });
-            }
-            
-            // Commit to trigger processing
-            console.log("🔔 Committing audio buffer...");
+          // Clear any existing timer
+          if (commitTimer) clearTimeout(commitTimer);
+          
+          // Commit after a short delay to allow VAD to work
+          commitTimer = setTimeout(() => {
+            console.log("🔔 Committing audio buffer (VAD trigger)...");
             client.realtime.send("input_audio_buffer.commit", {});
-            
-            // Clear buffer
-            audioBuffer = [];
-            isProcessing = false;
-          }
+          }, 500);
         }
         
       } catch (e) {
         console.error("Error processing message:", e);
-        isProcessing = false;
       }
     });
 
     // Send ready signal to client
     ws.send(JSON.stringify({ type: "ready", status: "connected" }));
 
+    // Test: Send a welcome message after 3 seconds
+    setTimeout(async () => {
+      console.log("🎯 Sending test welcome message...");
+      await client.realtime.send("conversation.item.create", {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Say hello and introduce yourself as the meeting assistant" }]
+      });
+    }, 3000);
+
     ws.on("close", () => {
       console.log("🔴 Client WebSocket closed");
+      if (commitTimer) clearTimeout(commitTimer);
       client.disconnect();
     });
 
