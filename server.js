@@ -14,7 +14,7 @@ if (!OPENAI_API_KEY) {
 }
 
 const app = express();
-app.use(express.static("public")); // serve your index.html from /public
+app.use(express.static("public"));
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
@@ -27,25 +27,83 @@ wss.on("connection", async (ws) => {
 
   const client = new RealtimeClient({ apiKey: OPENAI_API_KEY });
 
-  client.realtime.on("server.*", (event) => {
-    ws.send(JSON.stringify(event));
+  // Handle OpenAI realtime events
+  client.realtime.on("response.audio_transcript.done", (event) => {
+    console.log("User said:", event.transcript);
   });
 
-  client.realtime.on("close", () => ws.close());
+  client.realtime.on("response.audio.done", (event) => {
+    console.log("AI response audio generated");
+  });
 
-  await client.connect();
-  console.log("✅ Connected to OpenAI Realtime");
+  client.realtime.on("response.done", (event) => {
+    console.log("AI response completed");
+  });
 
-  ws.on("message", (data) => {
-    try {
-      const msg = JSON.parse(data);
-      if (msg.type === "input_audio_buffer.append" || msg.type === "input_audio_buffer.commit") {
-        client.realtime.send(msg.type, msg);
-      }
-    } catch (e) {
-      console.error("Error parsing message:", e);
+  client.realtime.on("error", (error) => {
+    console.error("OpenAI error:", error);
+  });
+
+  client.realtime.on("server.*", (event) => {
+    // Forward relevant events to client
+    if (event.type.includes('audio')) {
+      ws.send(JSON.stringify(event));
     }
   });
 
-  ws.on("close", () => client.disconnect());
+  client.realtime.on("close", () => {
+    console.log("OpenAI connection closed");
+    ws.close();
+  });
+
+  try {
+    await client.connect();
+    console.log("✅ Connected to OpenAI Realtime");
+    
+    // Configure the session for conversation
+    await client.realtime.send('session.update', {
+      modalities: ['text', 'audio'],
+      instructions: 'You are a helpful meeting assistant. Keep responses concise and professional.',
+      voice: 'alloy',
+      input_audio_format: 'pcm16',
+      output_audio_format: 'pcm16',
+      input_audio_transcription: { model: 'whisper-1' }
+    });
+
+  } catch (error) {
+    console.error("Failed to connect to OpenAI:", error);
+    ws.close();
+  }
+
+  ws.on("message", async (data) => {
+    try {
+      const msg = JSON.parse(data);
+      
+      if (msg.type === "meeting_audio") {
+        // Audio from meeting via Recall.ai
+        client.realtime.send("input_audio_buffer.append", {
+          audio: msg.audio
+        });
+        
+        // Commit after each chunk to trigger processing
+        client.realtime.send("input_audio_buffer.commit", {});
+      }
+      else if (msg.type === "meeting_transcript") {
+        // Send transcript as text input
+        client.realtime.send("conversation.item.create", {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: msg.text }]
+        });
+      }
+      
+    } catch (e) {
+      console.error("Error processing message:", e);
+    }
+  });
+
+  ws.on("close", () => {
+    console.log("Client disconnected");
+    client.disconnect();
+  });
 });
