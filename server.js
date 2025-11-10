@@ -14,7 +14,7 @@ if (!OPENAI_API_KEY) {
 }
 
 const app = express();
-app.use(express.static("public")); // משרת את public/
+app.use(express.static("public"));
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
@@ -27,31 +27,10 @@ wss.on("connection", async (ws) => {
 
   const client = new RealtimeClient({ apiKey: OPENAI_API_KEY });
 
-  // שליחת כל אירוע מה־Realtime ללקוח
-  client.realtime.on("server.*", (event) => {
-    ws.send(JSON.stringify(event));
-  });
-
+  client.realtime.on("server.*", (event) => ws.send(JSON.stringify(event)));
   client.realtime.on("close", () => ws.close());
 
   const messageQueue = [];
-
-  const handleMessage = (data) => {
-    try {
-      const event = JSON.parse(data);
-      client.realtime.send(event.type, event);
-
-      // ברגע שהלקוח סיים לשלוח אודיו, תבקש תגובה קולית
-      if (event.type === "input_audio_buffer.commit") {
-        client.realtime.send("response.create", {
-          instructions: "You are a helpful assistant. Respond in audio.",
-          modalities: ["audio"],
-        });
-      }
-    } catch (e) {
-      console.error("Error parsing message:", e);
-    }
-  };
 
   ws.on("message", (data) => {
     if (!client.isConnected()) messageQueue.push(data);
@@ -60,13 +39,24 @@ wss.on("connection", async (ws) => {
 
   ws.on("close", () => client.disconnect());
 
+  const handleMessage = (data) => {
+    try {
+      const event = JSON.parse(data);
+      client.realtime.send(event.type, event);
+    } catch (e) {
+      console.error("Error parsing message:", e);
+    }
+  };
+
   try {
     await client.connect();
     console.log("✅ Connected to OpenAI Realtime");
 
-    while (messageQueue.length) {
-      handleMessage(messageQueue.shift());
-    }
+    // שליחת הודעת בדיקה
+    client.sendUserMessageContent([{ type: "input_text", text: "Hello!" }]);
+    client.updateSession({ turn_detection: { type: "server_vad" } });
+
+    while (messageQueue.length) handleMessage(messageQueue.shift());
   } catch (e) {
     console.error("Error connecting to OpenAI:", e);
     ws.close();
