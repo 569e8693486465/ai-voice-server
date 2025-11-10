@@ -1,88 +1,70 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Google Meet AI Bot</title>
-  <style>
-    body { font-family: sans-serif; padding: 20px; }
-    #status { margin-bottom: 10px; }
-  </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Realtime AI Bot</title>
 </head>
 <body>
-  <h2>🤖 Realtime AI Bot</h2>
-  <p id="status">Connecting to WebSocket...</p>
+<h2>🤖 Realtime AI Bot</h2>
+<p id="status">Connecting to WebSocket...</p>
 
-  <script>
-    const status = document.getElementById("status");
-    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // Render URL או localhost
+<script>
+const status = document.getElementById("status");
+const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // Render URL או ws://localhost:3000
 
-    ws.onopen = () => {
-      console.log("✅ Connected to WebSocket");
-      status.textContent = "✅ Connected";
-    };
-    ws.onclose = () => {
-      console.log("❌ Disconnected");
-      status.textContent = "❌ Disconnected";
-    };
-    ws.onerror = (err) => {
-      console.error("❌ WebSocket error", err);
-      status.textContent = "❌ WebSocket error";
-    };
+ws.onopen = () => status.textContent = "✅ Connected to WebSocket";
+ws.onclose = () => status.textContent = "❌ Disconnected";
+ws.onerror = (err) => status.textContent = "❌ WebSocket error";
 
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === "output_audio_buffer.chunk" && msg.audio_base64) {
-        const audioData = atob(msg.audio_base64);
-        const buffer = new Uint8Array(audioData.length);
-        for (let i = 0; i < audioData.length; i++) buffer[i] = audioData.charCodeAt(i);
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.type === "output_audio_buffer.chunk" && msg.audio_base64) {
+    const audioData = atob(msg.audio_base64);
+    const buffer = new Uint8Array(audioData.length);
+    for (let i = 0; i < audioData.length; i++) buffer[i] = audioData.charCodeAt(i);
+    audioCtx.decodeAudioData(buffer.buffer, (decoded) => {
+      const source = audioCtx.createBufferSource();
+      source.buffer = decoded;
+      source.connect(audioCtx.destination);
+      source.start();
+    });
+  }
+};
 
-        audioCtx.decodeAudioData(buffer.buffer, (decoded) => {
-          const source = audioCtx.createBufferSource();
-          source.buffer = decoded;
-          source.connect(audioCtx.destination);
-          source.start();
-        });
-      }
-    };
+// שליחת מיקרופון בזמן אמת
+async function startAudio() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const processor = new MediaStreamTrackProcessor({ track: stream.getAudioTracks()[0] });
+  const reader = processor.readable.getReader();
 
-    async function startAudio() {
-      try {
-        const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const trackProcessor = new MediaStreamTrackProcessor({ track: mediaStream.getAudioTracks()[0] });
-        const reader = trackProcessor.readable.getReader();
-
-        function float32ToBase64(float32Array) {
-          let binary = "";
-          const view = new DataView(float32Array.buffer);
-          for (let i = 0; i < view.byteLength; i += 2) {
-            const s = Math.max(-1, Math.min(1, float32Array[i/2]));
-            view.setInt16(i, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-          }
-          for (let i = 0; i < view.byteLength; i++) binary += String.fromCharCode(view.getUint8(i));
-          return btoa(binary);
-        }
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (value) {
-            ws.send(JSON.stringify({
-              type: "input_audio_buffer.append",
-              audio: float32ToBase64(value.data)
-            }));
-          }
-        }
-
-        ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-      } catch (e) {
-        console.error("Error accessing audio:", e);
-      }
+  function float32ToBase64(float32Array) {
+    const buffer = new ArrayBuffer(float32Array.length * 2);
+    const view = new DataView(buffer);
+    for (let i = 0; i < float32Array.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32Array[i]));
+      view.setInt16(i*2, s < 0 ? s*0x8000 : s*0x7FFF, true);
     }
+    let binary = "";
+    const u8 = new Uint8Array(buffer);
+    for (let i = 0; i < u8.length; i++) binary += String.fromCharCode(u8[i]);
+    return btoa(binary);
+  }
 
-    startAudio();
-  </script>
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value) {
+      ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: float32ToBase64(value.data) }));
+    }
+  }
+
+  ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+}
+
+startAudio();
+</script>
 </body>
 </html>
