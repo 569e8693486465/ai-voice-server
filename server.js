@@ -1,7 +1,7 @@
 import express from "express";
 import { WebSocketServer } from "ws";
 import dotenv from "dotenv";
-import { RealtimeClient } from "@openai/realtime-api-beta";
+import WebSocket from "ws";
 
 dotenv.config();
 
@@ -26,94 +26,134 @@ wss.on("connection", async (ws) => {
   console.log("🟢 Client connected");
 
   try {
-    console.log("🔸 Creating OpenAI RealtimeClient...");
-    const client = new RealtimeClient({ 
-      apiKey: OPENAI_API_KEY,
+    console.log("🔸 Connecting to OpenAI Realtime API (GA)...");
+    
+    // Connect to OpenAI GA API
+    const openaiWs = new WebSocket("wss://api.openai.com/v1/realtime?model=gpt-realtime", {
+      headers: {
+        Authorization: "Bearer " + OPENAI_API_KEY,
+      },
     });
 
-    // Log ALL events
-    client.realtime.on("*", (event) => {
-      console.log(`🔵 ${event.type}`);
-      if (event.type.includes('response') || event.type.includes('error')) {
-        console.log("📢 Important event:", event);
+    openaiWs.on("open", function open() {
+      console.log("✅ Connected to OpenAI Realtime API");
+      
+      // Configure session using GA API format
+      openaiWs.send(JSON.stringify({
+        type: "session.update",
+        session: {
+          type: "realtime",
+          model: "gpt-realtime",
+          instructions: "You are a helpful meeting assistant. Respond briefly and conversationally. Keep responses under 10 words.",
+          voice: "alloy", // or "shimmer", "coral", "echo", "sage"
+          modalities: ["text", "audio"],
+          input_audio_format: "pcm16",
+          output_audio_format: "pcm16",
+          temperature: 0.8,
+          turn_detection: {
+            type: "server_vad",
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 500
+          }
+        }
+      }));
+      console.log("✅ Session configuration sent");
+    });
+
+    openaiWs.on("message", function incoming(message) {
+      try {
+        const event = JSON.parse(message.toString());
+        console.log(`🔵 OpenAI Event: ${event.type}`);
+        
+        // Handle different event types
+        switch (event.type) {
+          case "session.created":
+            console.log("✅ Session created");
+            break;
+            
+          case "session.updated":
+            console.log("✅ Session updated");
+            // Send ready signal to client
+            ws.send(JSON.stringify({ type: "ready", status: "connected" }));
+            break;
+            
+          case "response.output_audio.delta":
+            console.log("🔊 AI Audio Response Delta");
+            // Forward audio to client
+            ws.send(JSON.stringify({
+              type: "response.output_audio.delta",
+              delta: event.delta
+            }));
+            break;
+            
+          case "response.output_audio_transcript.delta":
+            console.log("💬 AI Transcript:", event.delta);
+            // Forward transcript to client
+            ws.send(JSON.stringify({
+              type: "response.output_audio_transcript.delta", 
+              delta: event.delta
+            }));
+            break;
+            
+          case "response.done":
+            console.log("✅ Response completed");
+            break;
+            
+          case "error":
+            console.error("🔴 OpenAI Error:", event.error);
+            ws.send(JSON.stringify({ type: "error", error: event.error.message }));
+            break;
+            
+          default:
+            // Forward other important events
+            if (event.type.includes('response') || event.type.includes('error')) {
+              ws.send(JSON.stringify(event));
+            }
+        }
+      } catch (error) {
+        console.error("Error parsing OpenAI message:", error);
       }
     });
 
-    client.realtime.on("response.audio.delta", (event) => {
-      console.log("🔊 AI Audio Delta - Length:", event.delta?.length || 0);
-      ws.send(JSON.stringify(event));
+    openaiWs.on("error", function error(err) {
+      console.error("🔴 OpenAI WebSocket error:", err);
+      ws.send(JSON.stringify({ type: "error", error: "OpenAI connection failed" }));
     });
 
-    client.realtime.on("response.audio_transcript.delta", (event) => {
-      console.log("💬 AI Transcript Delta:", event.delta);
-      ws.send(JSON.stringify(event));
+    openaiWs.on("close", function close() {
+      console.log("🔴 OpenAI WebSocket closed");
     });
 
-    client.realtime.on("response.done", (event) => {
-      console.log("✅ Response completed");
-      ws.send(JSON.stringify(event));
-    });
-
-    client.realtime.on("error", (error) => {
-      console.error("🔴 OpenAI Error:", error);
-      ws.send(JSON.stringify({ type: "error", error: error.message }));
-    });
-
-    // Connect to OpenAI
-    console.log("🔸 Connecting to OpenAI...");
-    await client.connect();
-    console.log("✅ Connected to OpenAI Realtime");
-
-    // Configure session - SIMPLER version
-    console.log("🔸 Configuring session...");
-    await client.realtime.send('session.update', {
-      modalities: ['audio'], // רק אודיו - יותר פשוט
-      instructions: 'You are a helpful meeting assistant. When you hear someone speak, respond to them conversationally. Keep responses brief and friendly.',
-      voice: 'alloy',
-      input_audio_format: 'pcm16',
-      output_audio_format: 'pcm16'
-    });
-    console.log("✅ Session configured");
-
-    let lastCommitTime = 0;
-    let audioChunks = 0;
-
-    // Set up message handling - SIMPLE approach
+    // Handle messages from client (meeting audio)
     ws.on("message", async (data) => {
       try {
         const msg = JSON.parse(data);
         
-        if (msg.type === "meeting_audio") {
-          audioChunks++;
-          
-          // Send audio to OpenAI
-          client.realtime.send("input_audio_buffer.append", {
+        if (msg.type === "meeting_audio" && openaiWs.readyState === WebSocket.OPEN) {
+          // Send audio to OpenAI using GA API format
+          openaiWs.send(JSON.stringify({
+            type: "input_audio_buffer.append",
             audio: msg.audio
-          });
-
-          // Commit every 5 chunks or every 2 seconds
-          const now = Date.now();
-          if (audioChunks >= 5 || now - lastCommitTime > 2000) {
-            console.log(`🔔 Committing audio (chunks: ${audioChunks})...`);
-            client.realtime.send("input_audio_buffer.commit", {});
-            audioChunks = 0;
-            lastCommitTime = now;
-          }
+          }));
+          
+          // Commit after sending audio
+          openaiWs.send(JSON.stringify({
+            type: "input_audio_buffer.commit",
+          }));
         }
         
       } catch (e) {
-        console.error("Error processing message:", e);
+        console.error("Error processing client message:", e);
       }
     });
 
-    // Send ready signal
-    ws.send(JSON.stringify({ type: "ready", status: "connected" }));
-
-    console.log("🎯 Waiting for audio input...");
-
+    // Clean up on client disconnect
     ws.on("close", () => {
       console.log("🔴 Client WebSocket closed");
-      client.disconnect();
+      if (openaiWs.readyState === WebSocket.OPEN) {
+        openaiWs.close();
+      }
     });
 
   } catch (error) {
