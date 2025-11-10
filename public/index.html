@@ -8,63 +8,145 @@
 <body>
 <h2>🤖 Realtime AI Bot</h2>
 <p id="status">Connecting to WebSocket...</p>
+<p id="transcript">Listening to meeting...</p>
 
 <script>
 const status = document.getElementById("status");
-const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // Render URL או ws://localhost:3000
+const transcriptEl = document.getElementById("transcript");
+let meetingTranscript = "";
 
-ws.onopen = () => status.textContent = "✅ Connected to WebSocket";
+// Connect to your server
+const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
+
+ws.onopen = () => {
+  status.textContent = "✅ Connected to WebSocket";
+  connectToMeetingAudio();
+  connectToMeetingTranscript();
+};
+
 ws.onclose = () => status.textContent = "❌ Disconnected";
 ws.onerror = (err) => status.textContent = "❌ WebSocket error";
 
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
+// Handle AI responses from OpenAI
 ws.onmessage = (event) => {
   const msg = JSON.parse(event.data);
-  if (msg.type === "output_audio_buffer.chunk" && msg.audio_base64) {
-    const audioData = atob(msg.audio_base64);
-    const buffer = new Uint8Array(audioData.length);
-    for (let i = 0; i < audioData.length; i++) buffer[i] = audioData.charCodeAt(i);
-    audioCtx.decodeAudioData(buffer.buffer, (decoded) => {
-      const source = audioCtx.createBufferSource();
-      source.buffer = decoded;
-      source.connect(audioCtx.destination);
-      source.start();
-    });
+  
+  if (msg.type === "response.audio.delta" && msg.delta) {
+    // Play AI audio response
+    playAudioChunk(msg.delta);
+  }
+  
+  if (msg.type === "response.audio_transcript.delta" && msg.delta) {
+    console.log("AI is saying:", msg.delta);
   }
 };
 
-// שליחת מיקרופון בזמן אמת
-async function startAudio() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const processor = new MediaStreamTrackProcessor({ track: stream.getAudioTracks()[0] });
-  const reader = processor.readable.getReader();
-
-  function float32ToBase64(float32Array) {
-    const buffer = new ArrayBuffer(float32Array.length * 2);
-    const view = new DataView(buffer);
+function playAudioChunk(base64Audio) {
+  try {
+    const audioData = atob(base64Audio);
+    const buffer = new Uint8Array(audioData.length);
+    for (let i = 0; i < audioData.length; i++) {
+      buffer[i] = audioData.charCodeAt(i);
+    }
+    
+    // Convert to Float32Array for Web Audio API
+    const float32Array = new Float32Array(buffer.length / 2);
+    const dataView = new DataView(buffer.buffer);
+    
     for (let i = 0; i < float32Array.length; i++) {
-      const s = Math.max(-1, Math.min(1, float32Array[i]));
-      view.setInt16(i*2, s < 0 ? s*0x8000 : s*0x7FFF, true);
+      const int16 = dataView.getInt16(i * 2, true);
+      float32Array[i] = int16 / 32768.0;
     }
-    let binary = "";
-    const u8 = new Uint8Array(buffer);
-    for (let i = 0; i < u8.length; i++) binary += String.fromCharCode(u8[i]);
-    return btoa(binary);
+    
+    const audioBuffer = audioCtx.createBuffer(1, float32Array.length, 24000);
+    audioBuffer.getChannelData(0).set(float32Array);
+    
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioCtx.destination);
+    source.start();
+    
+  } catch (error) {
+    console.error("Error playing audio:", error);
   }
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    if (value) {
-      ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: float32ToBase64(value.data) }));
-    }
-  }
-
-  ws.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
 }
 
-startAudio();
+// Connect to Recall.ai meeting audio
+async function connectToMeetingAudio() {
+  try {
+    // Get meeting audio stream (automatically provided by Recall.ai)
+    const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+      audio: {
+        sampleRate: 24000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true
+      }
+    });
+    
+    const meetingAudioTrack = mediaStream.getAudioTracks()[0];
+    const processor = new MediaStreamTrackProcessor({ track: meetingAudioTrack });
+    const reader = processor.readable.getReader();
+
+    function float32ToBase64(float32Array) {
+      const buffer = new ArrayBuffer(float32Array.length * 2);
+      const view = new DataView(buffer);
+      for (let i = 0; i < float32Array.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      }
+      let binary = "";
+      const u8 = new Uint8Array(buffer);
+      for (let i = 0; i < u8.length; i++) binary += String.fromCharCode(u8[i]);
+      return btoa(binary);
+    }
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) {
+        // Send meeting audio to server
+        ws.send(JSON.stringify({ 
+          type: "meeting_audio", 
+          audio: float32ToBase64(value.data) 
+        }));
+      }
+    }
+  } catch (error) {
+    console.error("Error accessing meeting audio:", error);
+  }
+}
+
+// Connect to Recall.ai real-time transcript
+function connectToMeetingTranscript() {
+  const transcriptWs = new WebSocket('wss://meeting-data.bot.recall.ai/api/v1/transcript');
+  
+  transcriptWs.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    const message = data.transcript?.words?.map(word => word.text)?.join(' ');
+    
+    if (message && message.trim()) {
+      meetingTranscript = message;
+      transcriptEl.textContent = `Latest: ${message}`;
+      
+      // Send transcript to your server for OpenAI processing
+      ws.send(JSON.stringify({
+        type: "meeting_transcript",
+        text: message
+      }));
+    }
+  };
+
+  transcriptWs.onopen = () => {
+    console.log('Connected to Recall.ai transcript WebSocket');
+  };
+
+  transcriptWs.onclose = () => {
+    console.log('Disconnected from Recall.ai transcript WebSocket');
+  };
+}
 </script>
 </body>
 </html>
