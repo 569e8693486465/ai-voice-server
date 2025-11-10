@@ -10,11 +10,13 @@
 <p id="status">Connecting to WebSocket...</p>
 <p id="transcript">Listening to meeting...</p>
 <p id="aiStatus">AI: Waiting...</p>
+<p id="debug">Debug: </p>
 
 <script>
 const status = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
 const aiStatus = document.getElementById("aiStatus");
+const debugEl = document.getElementById("debug");
 let meetingTranscript = "";
 
 // Connect to your server
@@ -23,116 +25,189 @@ const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
 ws.onopen = () => {
   status.textContent = "✅ Connected to WebSocket";
   connectToMeetingAudio();
-  // connectToMeetingTranscript(); // Temporarily disable transcript
 };
 
-ws.onclose = () => status.textContent = "❌ Disconnected";
+ws.onclose = () => {
+  status.textContent = "❌ Disconnected from server";
+  debugEl.textContent = "Debug: Server connection closed";
+};
+
 ws.onerror = (err) => {
   status.textContent = "❌ WebSocket error";
+  debugEl.textContent = "Debug: WebSocket error - " + JSON.stringify(err);
   console.error("WebSocket error:", err);
 };
 
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-// Handle ALL responses from OpenAI
+// Handle ALL responses from OpenAI and server
 ws.onmessage = (event) => {
   try {
     const msg = JSON.parse(event.data);
-    console.log("Received event:", msg.type);
+    console.log("Received event:", msg.type, msg);
+    debugEl.textContent = "Debug: Last event - " + msg.type;
     
-    if (msg.type === "response.audio.delta" && msg.delta) {
+    if (msg.type === "ready") {
+      aiStatus.textContent = "AI: Ready and listening";
+      debugEl.textContent = "Debug: OpenAI connected successfully";
+    }
+    else if (msg.type === "response.audio.delta" && msg.delta) {
       aiStatus.textContent = "AI: Speaking...";
       playAudioChunk(msg.delta);
-    } else if (msg.type === "response.audio_transcript.delta" && msg.delta) {
+    } 
+    else if (msg.type === "response.audio_transcript.delta" && msg.delta) {
       console.log("AI is saying:", msg.delta);
-    } else if (msg.type === "response.done") {
-      aiStatus.textContent = "AI: Waiting...";
-    } else if (msg.type === "error") {
+      aiStatus.textContent = "AI: " + msg.delta;
+    }
+    else if (msg.type === "input_audio_buffer.committed") {
+      debugEl.textContent = "Debug: Audio sent to OpenAI";
+    }
+    else if (msg.type === "session.updated") {
+      debugEl.textContent = "Debug: OpenAI session ready";
+    }
+    else if (msg.type === "error") {
       aiStatus.textContent = "AI Error: " + msg.error;
+      debugEl.textContent = "Debug: Error - " + msg.error;
+      console.error("Server error:", msg.error);
     }
     
   } catch (error) {
     console.error("Error parsing message:", error);
+    debugEl.textContent = "Debug: Parse error - " + error.message;
   }
 };
 
 function playAudioChunk(base64Audio) {
   try {
-    // Simple audio playback - fix potential issues
+    // Convert base64 to ArrayBuffer
     const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
     
-    // Create audio buffer with proper sample rate
+    // Create audio buffer (OpenAI uses 24kHz sample rate)
     const audioBuffer = audioCtx.createBuffer(1, audioData.length / 2, 24000);
     const channelData = audioBuffer.getChannelData(0);
     
-    // Convert Int16 to Float32
+    // Convert Int16 to Float32 for Web Audio API
+    const dataView = new DataView(audioData.buffer);
     for (let i = 0; i < channelData.length; i++) {
-      const int16 = (audioData[i * 2 + 1] << 8) | audioData[i * 2];
-      channelData[i] = int16 / 32768.0;
+      const int16 = dataView.getInt16(i * 2, true); // little-endian
+      channelData[i] = int16 / 32768.0; // Convert to float
     }
     
+    // Play the audio
     const source = audioCtx.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(audioCtx.destination);
     source.start();
     
+    console.log("✅ Played audio chunk:", audioData.length, "bytes");
+    
   } catch (error) {
-    console.error("Error playing audio:", error);
+    console.error("❌ Error playing audio:", error);
+    debugEl.textContent = "Debug: Audio play error - " + error.message;
   }
+}
+
+// Better audio conversion function
+function float32ToPCM16(float32Array) {
+  const pcm16 = new Int16Array(float32Array.length);
+  for (let i = 0; i < float32Array.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32Array[i]));
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  // Convert to base64
+  const uint8 = new Uint8Array(pcm16.buffer);
+  let binary = '';
+  for (let i = 0; i < uint8.length; i++) {
+    binary += String.fromCharCode(uint8[i]);
+  }
+  return btoa(binary);
 }
 
 // Connect to Recall.ai meeting audio
 async function connectToMeetingAudio() {
   try {
     status.textContent = "🎤 Getting meeting audio...";
+    debugEl.textContent = "Debug: Requesting microphone access...";
     
     // Get meeting audio stream (automatically provided by Recall.ai)
     const mediaStream = await navigator.mediaDevices.getUserMedia({ 
       audio: {
-        sampleRate: 24000,
+        sampleRate: 24000, // Match OpenAI's expected sample rate
         channelCount: 1,
-        echoCancellation: false, // Disable for better quality
-        noiseSuppression: false
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
       }
     });
     
-    status.textContent = "✅ Got meeting audio - Listening...";
+    status.textContent = "✅ Got meeting audio - Speak now!";
+    debugEl.textContent = "Debug: Microphone access granted - streaming audio";
     
-    const meetingAudioTrack = mediaStream.getAudioTracks()[0];
-    const processor = new MediaStreamTrackProcessor({ track: meetingAudioTrack });
-    const reader = processor.readable.getReader();
-
-    function float32ToBase64(float32Array) {
-      const buffer = new ArrayBuffer(float32Array.length * 2);
-      const view = new DataView(buffer);
-      for (let i = 0; i < float32Array.length; i++) {
-        const s = Math.max(-1, Math.min(1, float32Array[i]));
-        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    const audioContext = new AudioContext({ sampleRate: 24000 });
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    
+    // Use ScriptProcessor for audio processing (works in all browsers)
+    const processor = audioContext.createScriptProcessor(2048, 1, 1);
+    
+    let isProcessing = false;
+    
+    processor.onaudioprocess = (event) => {
+      if (isProcessing) return;
+      isProcessing = true;
+      
+      try {
+        const inputData = event.inputBuffer.getChannelData(0);
+        
+        // Only send if there's actual audio (not silence)
+        let hasAudio = false;
+        for (let i = 0; i < inputData.length; i++) {
+          if (Math.abs(inputData[i]) > 0.01) { // Threshold for silence
+            hasAudio = true;
+            break;
+          }
+        }
+        
+        if (hasAudio && ws.readyState === WebSocket.OPEN) {
+          const audioBase64 = float32ToPCM16(inputData);
+          ws.send(JSON.stringify({ 
+            type: "meeting_audio", 
+            audio: audioBase64 
+          }));
+        }
+      } catch (error) {
+        console.error("Audio processing error:", error);
       }
-      return btoa(new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
-    }
+      
+      isProcessing = false;
+    };
 
-    // Send audio chunks
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (value && value.data && value.data.length > 0) {
-        ws.send(JSON.stringify({ 
-          type: "meeting_audio", 
-          audio: float32ToBase64(value.data) 
-        }));
-      }
-    }
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    
+    console.log("✅ Audio streaming started");
+
   } catch (error) {
-    console.error("Error accessing meeting audio:", error);
+    console.error("❌ Error accessing meeting audio:", error);
     status.textContent = "❌ Failed to get meeting audio";
+    debugEl.textContent = "Debug: Microphone error - " + error.message;
   }
 }
 
-// NOTE: Transcript requires authentication - we'll fix this later
-// function connectToMeetingTranscript() {
-//   // This requires proper authentication headers
-// }
+// Simple function to test if audio is working
+function testAudioPlayback() {
+  const oscillator = audioCtx.createOscillator();
+  oscillator.type = 'sine';
+  oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
+  oscillator.connect(audioCtx.destination);
+  oscillator.start();
+  oscillator.stop(audioCtx.currentTime + 0.1);
+}
+
+// Test after a short delay
+setTimeout(() => {
+  testAudioPlayback();
+  console.log("Audio context test completed");
+}, 1000);
 </script>
 </body>
 </html>
