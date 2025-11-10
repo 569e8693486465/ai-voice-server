@@ -9,10 +9,12 @@
 <h2>🤖 Realtime AI Bot</h2>
 <p id="status">Connecting to WebSocket...</p>
 <p id="transcript">Listening to meeting...</p>
+<p id="aiStatus">AI: Waiting...</p>
 
 <script>
 const status = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
+const aiStatus = document.getElementById("aiStatus");
 let meetingTranscript = "";
 
 // Connect to your server
@@ -21,47 +23,53 @@ const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
 ws.onopen = () => {
   status.textContent = "✅ Connected to WebSocket";
   connectToMeetingAudio();
-  connectToMeetingTranscript();
+  // connectToMeetingTranscript(); // Temporarily disable transcript
 };
 
 ws.onclose = () => status.textContent = "❌ Disconnected";
-ws.onerror = (err) => status.textContent = "❌ WebSocket error";
+ws.onerror = (err) => {
+  status.textContent = "❌ WebSocket error";
+  console.error("WebSocket error:", err);
+};
 
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-// Handle AI responses from OpenAI
+// Handle ALL responses from OpenAI
 ws.onmessage = (event) => {
-  const msg = JSON.parse(event.data);
-  
-  if (msg.type === "response.audio.delta" && msg.delta) {
-    // Play AI audio response
-    playAudioChunk(msg.delta);
-  }
-  
-  if (msg.type === "response.audio_transcript.delta" && msg.delta) {
-    console.log("AI is saying:", msg.delta);
+  try {
+    const msg = JSON.parse(event.data);
+    console.log("Received event:", msg.type);
+    
+    if (msg.type === "response.audio.delta" && msg.delta) {
+      aiStatus.textContent = "AI: Speaking...";
+      playAudioChunk(msg.delta);
+    } else if (msg.type === "response.audio_transcript.delta" && msg.delta) {
+      console.log("AI is saying:", msg.delta);
+    } else if (msg.type === "response.done") {
+      aiStatus.textContent = "AI: Waiting...";
+    } else if (msg.type === "error") {
+      aiStatus.textContent = "AI Error: " + msg.error;
+    }
+    
+  } catch (error) {
+    console.error("Error parsing message:", error);
   }
 };
 
 function playAudioChunk(base64Audio) {
   try {
-    const audioData = atob(base64Audio);
-    const buffer = new Uint8Array(audioData.length);
-    for (let i = 0; i < audioData.length; i++) {
-      buffer[i] = audioData.charCodeAt(i);
+    // Simple audio playback - fix potential issues
+    const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
+    
+    // Create audio buffer with proper sample rate
+    const audioBuffer = audioCtx.createBuffer(1, audioData.length / 2, 24000);
+    const channelData = audioBuffer.getChannelData(0);
+    
+    // Convert Int16 to Float32
+    for (let i = 0; i < channelData.length; i++) {
+      const int16 = (audioData[i * 2 + 1] << 8) | audioData[i * 2];
+      channelData[i] = int16 / 32768.0;
     }
-    
-    // Convert to Float32Array for Web Audio API
-    const float32Array = new Float32Array(buffer.length / 2);
-    const dataView = new DataView(buffer.buffer);
-    
-    for (let i = 0; i < float32Array.length; i++) {
-      const int16 = dataView.getInt16(i * 2, true);
-      float32Array[i] = int16 / 32768.0;
-    }
-    
-    const audioBuffer = audioCtx.createBuffer(1, float32Array.length, 24000);
-    audioBuffer.getChannelData(0).set(float32Array);
     
     const source = audioCtx.createBufferSource();
     source.buffer = audioBuffer;
@@ -76,15 +84,19 @@ function playAudioChunk(base64Audio) {
 // Connect to Recall.ai meeting audio
 async function connectToMeetingAudio() {
   try {
+    status.textContent = "🎤 Getting meeting audio...";
+    
     // Get meeting audio stream (automatically provided by Recall.ai)
     const mediaStream = await navigator.mediaDevices.getUserMedia({ 
       audio: {
         sampleRate: 24000,
         channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true
+        echoCancellation: false, // Disable for better quality
+        noiseSuppression: false
       }
     });
+    
+    status.textContent = "✅ Got meeting audio - Listening...";
     
     const meetingAudioTrack = mediaStream.getAudioTracks()[0];
     const processor = new MediaStreamTrackProcessor({ track: meetingAudioTrack });
@@ -97,17 +109,14 @@ async function connectToMeetingAudio() {
         const s = Math.max(-1, Math.min(1, float32Array[i]));
         view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
       }
-      let binary = "";
-      const u8 = new Uint8Array(buffer);
-      for (let i = 0; i < u8.length; i++) binary += String.fromCharCode(u8[i]);
-      return btoa(binary);
+      return btoa(new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
     }
 
+    // Send audio chunks
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      if (value) {
-        // Send meeting audio to server
+      if (value && value.data && value.data.length > 0) {
         ws.send(JSON.stringify({ 
           type: "meeting_audio", 
           audio: float32ToBase64(value.data) 
@@ -116,37 +125,14 @@ async function connectToMeetingAudio() {
     }
   } catch (error) {
     console.error("Error accessing meeting audio:", error);
+    status.textContent = "❌ Failed to get meeting audio";
   }
 }
 
-// Connect to Recall.ai real-time transcript
-function connectToMeetingTranscript() {
-  const transcriptWs = new WebSocket('wss://meeting-data.bot.recall.ai/api/v1/transcript');
-  
-  transcriptWs.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    const message = data.transcript?.words?.map(word => word.text)?.join(' ');
-    
-    if (message && message.trim()) {
-      meetingTranscript = message;
-      transcriptEl.textContent = `Latest: ${message}`;
-      
-      // Send transcript to your server for OpenAI processing
-      ws.send(JSON.stringify({
-        type: "meeting_transcript",
-        text: message
-      }));
-    }
-  };
-
-  transcriptWs.onopen = () => {
-    console.log('Connected to Recall.ai transcript WebSocket');
-  };
-
-  transcriptWs.onclose = () => {
-    console.log('Disconnected from Recall.ai transcript WebSocket');
-  };
-}
+// NOTE: Transcript requires authentication - we'll fix this later
+// function connectToMeetingTranscript() {
+//   // This requires proper authentication headers
+// }
 </script>
 </body>
 </html>
