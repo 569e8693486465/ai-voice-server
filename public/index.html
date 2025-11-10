@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Google Meet AI Bot</title>
   <style>
     body { font-family: sans-serif; padding: 20px; }
@@ -15,31 +15,18 @@
 
   <script>
     const status = document.getElementById("status");
+    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // URL של Render
 
-    // WebSocket לשרת שלך
-    const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/"); // החלף ל־URL של Render / localhost:3000
+    ws.onopen = () => { status.textContent = "✅ Connected to WebSocket"; }
+    ws.onclose = () => { status.textContent = "❌ Disconnected"; }
+    ws.onerror = (err) => { console.error(err); status.textContent = "❌ WebSocket error"; }
 
-    ws.onopen = () => {
-      console.log("✅ Connected to WebSocket");
-      status.textContent = "✅ Connected to WebSocket";
-    };
-
-    ws.onclose = () => {
-      console.log("❌ Disconnected");
-      status.textContent = "❌ Disconnected";
-    };
-
-    ws.onerror = (err) => {
-      console.error("❌ WebSocket error", err);
-      status.textContent = "❌ WebSocket error";
-    };
-
-    // AudioContext לניגון בזמן אמת
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
-      // אם יש תגובת קול מה־OpenAI Realtime
+
+      // השמעת תגובות קוליות מה־Realtime API
       if (msg.type === "output_audio_buffer.chunk" && msg.audio_base64) {
         const audioData = atob(msg.audio_base64);
         const buffer = new Uint8Array(audioData.length);
@@ -54,7 +41,6 @@
       }
     };
 
-    // לוקח את האודיו מהפגישה ומעביר לשרת
     async function startAudio() {
       try {
         const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
