@@ -96,8 +96,6 @@ const audioLevel = document.getElementById("audioLevel");
 
 let audioContext;
 let isAudioProcessing = false;
-let audioChunkCount = 0;
-let lastAudioTime = 0;
 
 // Update audio level visualizer
 function updateAudioLevel(level) {
@@ -112,7 +110,7 @@ ws.onopen = () => {
   connectionStatus.textContent = "✅ Connected to server";
   connectionStatus.className = "status-item status-connected";
   
-  console.log("✅ Session configuration sent");
+  console.log("✅ Connected to server - waiting for OpenAI session");
   initializeAudio();
 };
 
@@ -147,13 +145,15 @@ ws.onmessage = (event) => {
     else if (msg.type === "response.done") {
       aiStatus.textContent = "✅ AI Ready - Listening...";
       aiStatus.className = "status-item status-listening";
-      aiResponse.textContent = "AI responses will appear here...";
     }
     else if (msg.type === "input_audio_buffer.speech_started") {
-      console.log("🎤 Speech detected");
+      console.log("🎤 Speech detected by OpenAI VAD");
     }
     else if (msg.type === "input_audio_buffer.speech_stopped") {
-      console.log("🎤 Speech stopped");
+      console.log("🎤 Speech stopped - OpenAI will auto-process");
+    }
+    else if (msg.type === "input_audio_buffer.committed") {
+      console.log("✅ OpenAI auto-committed audio");
     }
     else if (msg.type === "error") {
       aiStatus.textContent = "❌ AI Error";
@@ -213,7 +213,7 @@ function float32ToPCM16(float32Array) {
   return btoa(binary);
 }
 
-// Initialize audio processing
+// Initialize audio processing - SIMPLIFIED
 async function initializeAudio() {
   try {
     audioStatus.textContent = "🎤 Accessing microphone...";
@@ -255,25 +255,14 @@ async function initializeAudio() {
         const average = sum / inputData.length;
         updateAudioLevel(average);
         
-        // Check if there's actual audio (not silence)
-        let hasAudio = false;
-        for (let i = 0; i < inputData.length; i++) {
-          if (Math.abs(inputData[i]) > 0.01) {
-            hasAudio = true;
-            break;
-          }
-        }
+        // Send ALL audio to OpenAI - let OpenAI's VAD handle speech detection
+        // No custom silence detection - OpenAI does this better
+        const audioBase64 = float32ToPCM16(inputData);
+        ws.send(JSON.stringify({ 
+          type: "input_audio_buffer.append",
+          audio: audioBase64 
+        }));
         
-        // Only send if audio is above threshold (speech detected)
-        if (hasAudio && average > 0.01) {
-          const audioBase64 = float32ToPCM16(inputData);
-          ws.send(JSON.stringify({ 
-            type: "input_audio_buffer.append",
-            audio: audioBase64 
-          }));
-          audioChunkCount++;
-          lastAudioTime = Date.now();
-        }
       } catch (error) {
         console.error("Audio processing error:", error);
       }
@@ -284,7 +273,7 @@ async function initializeAudio() {
     source.connect(processor);
     processor.connect(audioContext.destination);
     
-    console.log("✅ Audio streaming started");
+    console.log("✅ Audio streaming started - sending all audio to OpenAI VAD");
 
   } catch (error) {
     console.error("Error accessing meeting audio:", error);
@@ -295,10 +284,7 @@ async function initializeAudio() {
 
 // Reset audio level visualizer when no audio
 setInterval(() => {
-  const timeSinceAudio = Date.now() - lastAudioTime;
-  if (timeSinceAudio > 1000) {
-    updateAudioLevel(0);
-  }
+  updateAudioLevel(0);
 }, 100);
 </script>
 </body>
