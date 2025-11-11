@@ -112,26 +112,6 @@ ws.onopen = () => {
   connectionStatus.textContent = "✅ Connected to server";
   connectionStatus.className = "status-item status-connected";
   
-  // Send session configuration to OpenAI
-  ws.send(JSON.stringify({
-    type: "session.update",
-    session: {
-      type: "realtime",
-      model: "gpt-realtime",
-      instructions: "You are a helpful meeting assistant. Respond briefly in English. Keep responses under 10 words.",
-      voice: "alloy",
-      input_audio_format: "pcm16",
-      output_audio_format: "pcm16",
-      temperature: 0.7,
-      turn_detection: {
-        type: "server_vad",
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 500
-      }
-    }
-  }));
-  
   console.log("✅ Session configuration sent");
   initializeAudio();
 };
