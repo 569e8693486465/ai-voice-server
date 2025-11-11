@@ -26,75 +26,54 @@ wss.on("connection", async (ws) => {
   console.log("🟢 Client connected");
 
   try {
-    console.log("🔸 Connecting to OpenAI Realtime API (GA)...");
+    console.log("🔸 Connecting to OpenAI Realtime API...");
     
-    // Connect to OpenAI GA API
+    // Connect directly to OpenAI GA API
     const openaiWs = new WebSocket("wss://api.openai.com/v1/realtime?model=gpt-realtime", {
       headers: {
         Authorization: "Bearer " + OPENAI_API_KEY,
       },
     });
 
-    let audioBuffer = [];
-    let commitTimer = null;
-    let isSpeaking = false;
-
     openaiWs.on("open", function open() {
       console.log("✅ Connected to OpenAI Realtime API");
       
-      // Configure session using CORRECT GA API format
+      // Simple session configuration - let OpenAI handle everything
       openaiWs.send(JSON.stringify({
         type: "session.update",
         session: {
           type: "realtime",
           model: "gpt-realtime",
-          instructions: "You are a helpful meeting assistant. Keep responses very brief - 1-2 sentences maximum. Respond conversationally.",
+          instructions: "You are a helpful meeting assistant. Respond briefly in English.",
+          voice: "alloy",
           input_audio_format: "pcm16",
           output_audio_format: "pcm16",
-          temperature: 0.7,
-          voice: "alloy", // This should be at the session level in GA API
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.3,
-            prefix_padding_ms: 200,
-            silence_duration_ms: 400
-          }
+          temperature: 0.7
+          // NO turn_detection - let OpenAI handle it automatically
         }
       }));
-      console.log("✅ Session configuration sent");
+      console.log("✅ Session configured");
     });
 
     openaiWs.on("message", function incoming(message) {
       try {
         const event = JSON.parse(message.toString());
         
-        if (event.type === "session.created") {
-          console.log("✅ Session created");
-        } else if (event.type === "session.updated") {
-          console.log("✅ Session updated");
-          ws.send(JSON.stringify({ type: "ready", status: "connected" }));
-        } else if (event.type === "response.output_audio.delta") {
+        // Forward ALL important events to client
+        if (event.type.includes('response') || event.type.includes('error')) {
+          ws.send(JSON.stringify(event));
+        }
+
+        // Log for debugging
+        if (event.type === "response.output_audio.delta") {
           console.log("🔊 AI Audio Response");
-          isSpeaking = true;
-          ws.send(JSON.stringify({
-            type: "response.output_audio.delta",
-            delta: event.delta
-          }));
         } else if (event.type === "response.output_audio_transcript.delta") {
           console.log("💬 AI:", event.delta);
-          ws.send(JSON.stringify({
-            type: "response.output_audio_transcript.delta", 
-            delta: event.delta
-          }));
-        } else if (event.type === "response.done") {
-          console.log("✅ Response completed");
-          isSpeaking = false;
-        } else if (event.type === "error") {
-          if (event.error.code !== 'input_audio_buffer_commit_empty' && 
-              event.error.code !== 'unknown_parameter') {
-            console.error("🔴 OpenAI Error:", event.error);
-          }
+        } else if (event.type === "session.updated") {
+          console.log("✅ Session ready");
+          ws.send(JSON.stringify({ type: "ready" }));
         }
+        
       } catch (error) {
         console.error("Error parsing OpenAI message:", error);
       }
@@ -108,52 +87,20 @@ wss.on("connection", async (ws) => {
       console.log("🔴 OpenAI WebSocket closed");
     });
 
-    // Function to commit audio buffer
-    function commitAudioBuffer() {
-      if (audioBuffer.length === 0 || openaiWs.readyState !== WebSocket.OPEN) return;
-      
-      console.log(`🔔 Committing ${audioBuffer.length} audio chunks...`);
-      
-      // Send all buffered audio
-      for (const audioChunk of audioBuffer) {
-        openaiWs.send(JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: audioChunk
-        }));
-      }
-      
-      // Commit the audio
-      openaiWs.send(JSON.stringify({
-        type: "input_audio_buffer.commit",
-      }));
-      
-      // Reset buffer
-      audioBuffer = [];
-    }
-
-    // Handle messages from client (meeting audio)
+    // Handle messages from client - SIMPLE: just forward audio
     ws.on("message", async (data) => {
       try {
         const msg = JSON.parse(data);
         
-        if (msg.type === "meeting_audio" && openaiWs.readyState === WebSocket.OPEN && !isSpeaking) {
-          // Add audio to buffer
-          audioBuffer.push(msg.audio);
+        if (msg.type === "meeting_audio" && openaiWs.readyState === WebSocket.OPEN) {
+          // Send audio directly to OpenAI - NO buffering, NO committing
+          openaiWs.send(JSON.stringify({
+            type: "input_audio_buffer.append",
+            audio: msg.audio
+          }));
           
-          // Clear any existing timer
-          if (commitTimer) clearTimeout(commitTimer);
-          
-          // Commit immediately for faster response
-          if (audioBuffer.length >= 8) {
-            commitAudioBuffer();
-          } else {
-            // Set timer to commit after shorter timeout
-            commitTimer = setTimeout(() => {
-              if (audioBuffer.length > 3) {
-                commitAudioBuffer();
-              }
-            }, 800);
-          }
+          // Let OpenAI handle when to process the audio
+          // NO manual commit - OpenAI does this automatically
         }
         
       } catch (e) {
@@ -161,10 +108,9 @@ wss.on("connection", async (ws) => {
       }
     });
 
-    // Clean up on client disconnect
+    // Clean up
     ws.on("close", () => {
       console.log("🔴 Client WebSocket closed");
-      if (commitTimer) clearTimeout(commitTimer);
       if (openaiWs.readyState === WebSocket.OPEN) {
         openaiWs.close();
       }
@@ -172,9 +118,5 @@ wss.on("connection", async (ws) => {
 
   } catch (error) {
     console.error("❌ Failed to setup OpenAI:", error);
-    ws.send(JSON.stringify({ 
-      type: "error", 
-      error: "Setup failed: " + error.message 
-    }));
   }
 });
