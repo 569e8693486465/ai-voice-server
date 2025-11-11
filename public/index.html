@@ -1,78 +1,325 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>Realtime AI Voice</title>
-    <style>
-      body { font-family: sans-serif; background: #111; color: #fff; text-align: center; padding: 50px; }
-      button { padding: 10px 20px; font-size: 16px; border: none; border-radius: 8px; cursor: pointer; background: #0a84ff; color: #fff; }
-      button:hover { background: #0066cc; }
-    </style>
-  </head>
-  <body>
-    <h1>🎤 Real-time AI Voice</h1>
-    <button id="startBtn">Start Conversation</button>
-    <p id="status">Idle</p>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Meeting Assistant</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #f5f5f5;
+      text-align: center;
+    }
+    .status-container {
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      margin: 20px 0;
+    }
+    .status-item {
+      margin: 15px 0;
+      padding: 10px;
+      border-radius: 5px;
+      font-size: 16px;
+    }
+    .status-connecting { background: #fff3cd; color: #856404; }
+    .status-connected { background: #d1edff; color: #004085; }
+    .status-listening { background: #d4edda; color: #155724; }
+    .status-speaking { background: #f8d7da; color: #721c24; }
+    .status-error { background: #f8d7da; color: #721c24; }
+    
+    .audio-visualizer {
+      height: 20px;
+      background: #e9ecef;
+      border-radius: 10px;
+      margin: 20px 0;
+      overflow: hidden;
+    }
+    .audio-level {
+      height: 100%;
+      background: linear-gradient(90deg, #28a745, #ffc107, #dc3545);
+      width: 0%;
+      transition: width 0.1s ease;
+    }
+    
+    h1 {
+      color: #333;
+      margin-bottom: 10px;
+    }
+    
+    .ai-response {
+      background: #f8f9fa;
+      border-left: 4px solid #007bff;
+      padding: 15px;
+      margin: 15px 0;
+      border-radius: 5px;
+      min-height: 20px;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <h1>🤖 AI Meeting Assistant</h1>
+  
+  <div class="status-container">
+    <div id="connectionStatus" class="status-item status-connecting">
+      🔄 Connecting to server...
+    </div>
+    
+    <div id="audioStatus" class="status-item status-connecting">
+      🎤 Initializing audio...
+    </div>
+    
+    <div class="audio-visualizer">
+      <div id="audioLevel" class="audio-level"></div>
+    </div>
+    
+    <div id="aiStatus" class="status-item status-connecting">
+      ⏳ Waiting for AI connection...
+    </div>
+    
+    <div id="aiResponse" class="ai-response">
+      AI responses will appear here...
+    </div>
+  </div>
 
-    <script>
-      const statusEl = document.getElementById("status");
-      const startBtn = document.getElementById("startBtn");
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+<script>
+const connectionStatus = document.getElementById("connectionStatus");
+const audioStatus = document.getElementById("audioStatus");
+const aiStatus = document.getElementById("aiStatus");
+const aiResponse = document.getElementById("aiResponse");
+const audioLevel = document.getElementById("audioLevel");
 
-      let ws;
+let audioContext;
+let isAudioProcessing = false;
 
-      startBtn.onclick = async () => {
-        statusEl.textContent = "Connecting...";
+// Update audio level visualizer
+function updateAudioLevel(level) {
+  const width = Math.min(100, level * 500);
+  audioLevel.style.width = width + '%';
+}
 
-        // Get OpenAI Realtime session token
-        const tokenResponse = await fetch("https://avatar-server-yp11.onrender.com/session");
-        const data = await tokenResponse.json();
+// Connect to your server
+const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
 
-        // Connect to our WebSocket proxy
-        ws = new WebSocket("wss://avatar-server-yp11.onrender.com");
-        ws.onopen = () => {
-          statusEl.textContent = "Connected. Speaking...";
-          ws.send(JSON.stringify({
-            type: "response.create",
-            response: {
-              instructions: "Hello there! I’m your AI assistant speaking in real time. How are you today?",
-            }
-          }));
-        };
+ws.onopen = () => {
+  connectionStatus.textContent = "✅ Connected to server";
+  connectionStatus.className = "status-item status-connected";
+  
+  console.log("✅ Connected to server - waiting for OpenAI session");
+  initializeAudio();
+};
 
-        // For streaming playback
-        let nextStartTime = audioContext.currentTime;
+ws.onclose = () => {
+  connectionStatus.textContent = "❌ Disconnected from server";
+  connectionStatus.className = "status-item status-error";
+};
 
-        ws.onmessage = async (event) => {
-          const msg = JSON.parse(event.data);
-          if (msg.type === "audio-chunk") {
-            const audioBuffer = base64ToAudioBuffer(msg.data);
-            playAudioBuffer(audioBuffer);
-          } else if (msg.type === "done") {
-            statusEl.textContent = "Done speaking!";
-          }
-        };
+ws.onerror = (err) => {
+  connectionStatus.textContent = "❌ Connection error";
+  connectionStatus.className = "status-item status-error";
+};
 
-        function base64ToAudioBuffer(base64) {
-          const binary = atob(base64);
-          const len = binary.length;
-          const buffer = new ArrayBuffer(len);
-          const view = new Uint8Array(buffer);
-          for (let i = 0; i < len; i++) view[i] = binary.charCodeAt(i);
-          return audioContext.decodeAudioData(buffer);
+// Handle responses from OpenAI
+ws.onmessage = (event) => {
+  try {
+    const msg = JSON.parse(event.data);
+    
+    if (msg.type === "session.updated") {
+      aiStatus.textContent = "✅ AI Ready - Listening...";
+      aiStatus.className = "status-item status-listening";
+      console.log("✅ OpenAI session ready");
+    }
+    else if (msg.type === "response.complete") {
+      // Play complete response when OpenAI finishes
+      aiStatus.textContent = "🔊 AI Speaking...";
+      aiStatus.className = "status-item status-speaking";
+      aiResponse.textContent = "AI: " + msg.transcript;
+      console.log(`🎯 Playing complete response: ${msg.audioBuffers.length} audio chunks`);
+      playCompleteAudio(msg.audioBuffers);
+    }
+    else if (msg.type === "input_audio_buffer.speech_started") {
+      console.log("🎤 Speech detected by OpenAI VAD");
+    }
+    else if (msg.type === "input_audio_buffer.speech_stopped") {
+      console.log("🎤 Speech stopped - OpenAI will auto-process");
+    }
+    else if (msg.type === "input_audio_buffer.committed") {
+      console.log("✅ OpenAI auto-committed audio");
+    }
+    else if (msg.type === "error") {
+      aiStatus.textContent = "❌ AI Error";
+      aiStatus.className = "status-item status-error";
+      console.error("OpenAI error:", msg.error);
+    }
+    
+  } catch (error) {
+    console.error("Error parsing message:", error);
+  }
+};
+
+// Play complete audio response
+async function playCompleteAudio(audioBuffers) {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  
+  try {
+    // Combine all audio buffers into one
+    const combinedAudioData = await combineAudioBuffers(audioBuffers);
+    
+    // Create and play the combined audio buffer
+    const audioBuffer = audioContext.createBuffer(1, combinedAudioData.length, 24000);
+    audioBuffer.getChannelData(0).set(combinedAudioData);
+    
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioContext.destination);
+    source.onended = () => {
+      aiStatus.textContent = "✅ AI Ready - Listening...";
+      aiStatus.className = "status-item status-listening";
+      console.log("✅ Finished playing complete response");
+    };
+    source.start();
+    
+  } catch (error) {
+    console.error("Error playing complete audio:", error);
+    aiStatus.textContent = "✅ AI Ready - Listening...";
+    aiStatus.className = "status-item status-listening";
+  }
+}
+
+// Combine multiple audio buffers into one
+function combineAudioBuffers(audioBuffers) {
+  return new Promise((resolve) => {
+    try {
+      // Calculate total length
+      let totalLength = 0;
+      const allChunks = [];
+      
+      for (const base64Audio of audioBuffers) {
+        const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
+        const chunkLength = audioData.length / 2; // 2 bytes per sample (16-bit)
+        totalLength += chunkLength;
+        allChunks.push(audioData);
+      }
+      
+      // Create combined Float32Array
+      const combined = new Float32Array(totalLength);
+      let offset = 0;
+      
+      for (const audioData of allChunks) {
+        const dataView = new DataView(audioData.buffer);
+        const chunkLength = audioData.length / 2;
+        
+        for (let i = 0; i < chunkLength; i++) {
+          const int16 = dataView.getInt16(i * 2, true);
+          combined[offset + i] = int16 / 32768.0;
         }
+        offset += chunkLength;
+      }
+      
+      resolve(combined);
+      
+    } catch (error) {
+      console.error("Error combining audio buffers:", error);
+      resolve(new Float32Array(0));
+    }
+  });
+}
 
-        async function playAudioBuffer(promiseBuffer) {
-          const buffer = await promiseBuffer;
-          const source = audioContext.createBufferSource();
-          source.buffer = buffer;
-          source.connect(audioContext.destination);
-          const now = audioContext.currentTime;
-          const startAt = Math.max(now, nextStartTime);
-          source.start(startAt);
-          nextStartTime = startAt + buffer.duration;
+// Audio conversion function
+function float32ToPCM16(float32Array) {
+  const pcm16 = new Int16Array(float32Array.length);
+  for (let i = 0; i < float32Array.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32Array[i]));
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  // Convert to base64
+  const uint8 = new Uint8Array(pcm16.buffer);
+  let binary = '';
+  for (let i = 0; i < uint8.length; i++) {
+    binary += String.fromCharCode(uint8[i]);
+  }
+  return btoa(binary);
+}
+
+// Initialize audio processing
+async function initializeAudio() {
+  try {
+    audioStatus.textContent = "🎤 Accessing microphone...";
+    audioStatus.className = "status-item status-connecting";
+    
+    // Get meeting audio stream (automatically provided by Recall.ai)
+    const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+      audio: {
+        sampleRate: 24000,
+        channelCount: 1,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    });
+    
+    audioStatus.textContent = "✅ Microphone active - Speak normally";
+    audioStatus.className = "status-item status-listening";
+    
+    // Initialize audio context
+    audioContext = new AudioContext({ sampleRate: 24000 });
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    
+    // Use ScriptProcessor for audio processing
+    const processor = audioContext.createScriptProcessor(1024, 1, 1);
+    
+    processor.onaudioprocess = (event) => {
+      if (isAudioProcessing || ws.readyState !== WebSocket.OPEN) return;
+      isAudioProcessing = true;
+      
+      try {
+        const inputData = event.inputBuffer.getChannelData(0);
+        
+        // Calculate audio level for visualization
+        let sum = 0;
+        for (let i = 0; i < inputData.length; i++) {
+          sum += Math.abs(inputData[i]);
         }
-      };
-    </script>
-  </body>
+        const average = sum / inputData.length;
+        updateAudioLevel(average);
+        
+        // Send ALL audio to OpenAI - let OpenAI's VAD handle speech detection
+        const audioBase64 = float32ToPCM16(inputData);
+        ws.send(JSON.stringify({ 
+          type: "input_audio_buffer.append",
+          audio: audioBase64 
+        }));
+        
+      } catch (error) {
+        console.error("Audio processing error:", error);
+      }
+      
+      isAudioProcessing = false;
+    };
+
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    
+    console.log("✅ Audio streaming started - sending all audio to OpenAI VAD");
+
+  } catch (error) {
+    console.error("Error accessing meeting audio:", error);
+    audioStatus.textContent = "❌ Microphone access failed";
+    audioStatus.className = "status-item status-error";
+  }
+}
+
+// Reset audio level visualizer when no audio
+setInterval(() => {
+  updateAudioLevel(0);
+}, 100);
+</script>
+</body>
 </html>
