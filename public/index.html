@@ -1,245 +1,78 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Meeting Assistant</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 600px;
-      margin: 0 auto;
-      padding: 20px;
-      background-color: #f5f5f5;
-      text-align: center;
-    }
-    .status-container {
-      background: white;
-      padding: 20px;
-      border-radius: 10px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-      margin: 20px 0;
-    }
-    .status-item {
-      margin: 15px 0;
-      padding: 10px;
-      border-radius: 5px;
-      font-size: 16px;
-    }
-    .status-connecting { background: #fff3cd; color: #856404; }
-    .status-connected { background: #d1edff; color: #004085; }
-    .status-listening { background: #d4edda; color: #155724; }
-    .status-speaking { background: #f8d7da; color: #721c24; }
-    .status-error { background: #f8d7da; color: #721c24; }
+  <head>
+    <meta charset="UTF-8" />
+    <title>Realtime AI Voice</title>
+    <style>
+      body { font-family: sans-serif; background: #111; color: #fff; text-align: center; padding: 50px; }
+      button { padding: 10px 20px; font-size: 16px; border: none; border-radius: 8px; cursor: pointer; background: #0a84ff; color: #fff; }
+      button:hover { background: #0066cc; }
+    </style>
+  </head>
+  <body>
+    <h1>🎤 Real-time AI Voice</h1>
+    <button id="startBtn">Start Conversation</button>
+    <p id="status">Idle</p>
 
-    .audio-visualizer {
-      height: 20px;
-      background: #e9ecef;
-      border-radius: 10px;
-      margin: 20px 0;
-      overflow: hidden;
-    }
-    .audio-level {
-      height: 100%;
-      background: linear-gradient(90deg, #28a745, #ffc107, #dc3545);
-      width: 0%;
-      transition: width 0.1s ease;
-    }
+    <script>
+      const statusEl = document.getElementById("status");
+      const startBtn = document.getElementById("startBtn");
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-    h1 {
-      color: #333;
-      margin-bottom: 10px;
-    }
+      let ws;
 
-    .ai-response {
-      background: #f8f9fa;
-      border-left: 4px solid #007bff;
-      padding: 15px;
-      margin: 15px 0;
-      border-radius: 5px;
-      min-height: 20px;
-      font-style: italic;
-    }
-  </style>
-</head>
-<body>
-  <h1>🤖 AI Meeting Assistant</h1>
+      startBtn.onclick = async () => {
+        statusEl.textContent = "Connecting...";
 
-  <div class="status-container">
-    <div id="connectionStatus" class="status-item status-connecting">
-      🔄 Connecting to server...
-    </div>
+        // Get OpenAI Realtime session token
+        const tokenResponse = await fetch("https://avatar-server-yp11.onrender.com/session");
+        const data = await tokenResponse.json();
 
-    <div id="audioStatus" class="status-item status-connecting">
-      🎤 Initializing audio...
-    </div>
-
-    <div class="audio-visualizer">
-      <div id="audioLevel" class="audio-level"></div>
-    </div>
-
-    <div id="aiStatus" class="status-item status-connecting">
-      ⏳ Waiting for AI connection...
-    </div>
-
-    <div id="aiResponse" class="ai-response">
-      AI responses will appear here...
-    </div>
-  </div>
-
-  <script>
-    const connectionStatus = document.getElementById("connectionStatus");
-    const audioStatus = document.getElementById("audioStatus");
-    const aiStatus = document.getElementById("aiStatus");
-    const aiResponse = document.getElementById("aiResponse");
-    const audioLevel = document.getElementById("audioLevel");
-
-    let audioContext;
-    let nextStartTime = 0;
-
-    function updateAudioLevel(level) {
-      const width = Math.min(100, level * 500);
-      audioLevel.style.width = width + '%';
-    }
-
-    const ws = new WebSocket(location.origin.replace(/^http/, 'ws'));
-
-    ws.onopen = () => {
-      connectionStatus.textContent = "✅ Connected to server";
-      connectionStatus.className = "status-item status-connected";
-      console.log("✅ Connected – waiting for AI session");
-      initializeAudio();
-    };
-
-    ws.onclose = () => {
-      connectionStatus.textContent = "❌ Disconnected from server";
-      connectionStatus.className = "status-item status-error";
-    };
-
-    ws.onerror = (err) => {
-      connectionStatus.textContent = "❌ Connection error";
-      connectionStatus.className = "status-item status-error";
-      console.error("WebSocket error:", err);
-    };
-
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-
-      if (msg.type === "session.updated") {
-        aiStatus.textContent = "✅ AI Ready - Listening...";
-        aiStatus.className = "status-item status-listening";
-      }
-      else if (msg.type === "audio_chunk") {
-        aiStatus.textContent = "🔊 AI Speaking...";
-        aiStatus.className = "status-item status-speaking";
-        playChunk(msg.delta);
-      }
-      else if (msg.type === "transcript_delta") {
-        aiResponse.textContent += msg.delta;
-      }
-      else if (msg.type === "response_done") {
-        aiStatus.textContent = "✅ AI Ready - Listening...";
-        aiStatus.className = "status-item status-listening";
-        aiResponse.textContent += "\n"; // new line after completion
-      }
-      else if (msg.type === "error") {
-        aiStatus.textContent = "❌ AI Error";
-        aiStatus.className = "status-item status-error";
-        console.error("AI error:", msg.error);
-      }
-    };
-
-    async function playChunk(base64pcm) {
-      if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-        nextStartTime = audioContext.currentTime;
-      }
-
-      // decode base64 to PCM16
-      const u8 = Uint8Array.from(atob(base64pcm), c => c.charCodeAt(0));
-      const view = new DataView(u8.buffer);
-      const sampleCount = u8.length / 2;
-      const float32 = new Float32Array(sampleCount);
-      for (let i = 0; i < sampleCount; i++) {
-        float32[i] = view.getInt16(i * 2, true) / 32768;
-      }
-
-      const buffer = audioContext.createBuffer(1, float32.length, 24000);
-      buffer.getChannelData(0).set(float32);
-      const source = audioContext.createBufferSource();
-      source.buffer = buffer;
-      source.connect(audioContext.destination);
-
-      // schedule playback
-      const now = audioContext.currentTime;
-      if (nextStartTime < now) {
-        nextStartTime = now;
-      }
-      source.start(nextStartTime);
-      nextStartTime += buffer.duration;
-    }
-
-    async function initializeAudio() {
-      try {
-        audioStatus.textContent = "🎤 Accessing microphone...";
-        audioStatus.className = "status-item status-connecting";
-
-        const mediaStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            sampleRate: 24000,
-            channelCount: 1,
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false
-          }
-        });
-
-        audioStatus.textContent = "✅ Microphone active - Speak normally";
-        audioStatus.className = "status-item status-listening";
-
-        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-        const source = audioContext.createMediaStreamSource(mediaStream);
-        const processor = audioContext.createScriptProcessor(1024, 1, 1);
-
-        processor.onaudioprocess = (event) => {
-          const inputData = event.inputBuffer.getChannelData(0);
-          let sum = 0;
-          for (let i = 0; i < inputData.length; i++) {
-            sum += Math.abs(inputData[i]);
-          }
-          const avg = sum / inputData.length;
-          updateAudioLevel(avg);
-
-          const pcm16 = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            const s = Math.max(-1, Math.min(1, inputData[i]));
-            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
-          const uint8 = new Uint8Array(pcm16.buffer);
-          let binary = '';
-          for (let i = 0; i < uint8.length; i++) {
-            binary += String.fromCharCode(uint8[i]);
-          }
-          const b64 = btoa(binary);
-
+        // Connect to our WebSocket proxy
+        ws = new WebSocket("wss://avatar-server-yp11.onrender.com");
+        ws.onopen = () => {
+          statusEl.textContent = "Connected. Speaking...";
           ws.send(JSON.stringify({
-            type: "input_audio_buffer.append",
-            audio: b64
+            type: "response.create",
+            response: {
+              instructions: "Hello there! I’m your AI assistant speaking in real time. How are you today?",
+            }
           }));
         };
 
-        source.connect(processor);
-        processor.connect(audioContext.destination);
+        // For streaming playback
+        let nextStartTime = audioContext.currentTime;
 
-        console.log("✅ Audio streaming started – sending mic data to AI");
-      } catch (err) {
-        console.error("Error accessing microphone:", err);
-        audioStatus.textContent = "❌ Microphone access failed";
-        audioStatus.className = "status-item status-error";
-      }
-    }
+        ws.onmessage = async (event) => {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "audio-chunk") {
+            const audioBuffer = base64ToAudioBuffer(msg.data);
+            playAudioBuffer(audioBuffer);
+          } else if (msg.type === "done") {
+            statusEl.textContent = "Done speaking!";
+          }
+        };
 
-    setInterval(() => updateAudioLevel(0), 100);
-  </script>
-</body>
+        function base64ToAudioBuffer(base64) {
+          const binary = atob(base64);
+          const len = binary.length;
+          const buffer = new ArrayBuffer(len);
+          const view = new Uint8Array(buffer);
+          for (let i = 0; i < len; i++) view[i] = binary.charCodeAt(i);
+          return audioContext.decodeAudioData(buffer);
+        }
+
+        async function playAudioBuffer(promiseBuffer) {
+          const buffer = await promiseBuffer;
+          const source = audioContext.createBufferSource();
+          source.buffer = buffer;
+          source.connect(audioContext.destination);
+          const now = audioContext.currentTime;
+          const startAt = Math.max(now, nextStartTime);
+          source.start(startAt);
+          nextStartTime = startAt + buffer.duration;
+        }
+      };
+    </script>
+  </body>
 </html>
