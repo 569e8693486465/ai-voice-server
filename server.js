@@ -35,21 +35,26 @@ wss.on("connection", async (ws) => {
       },
     });
 
+    let audioBuffer = [];
+    let isCollectingAudio = false;
+    let commitTimer = null;
+
     openaiWs.on("open", function open() {
       console.log("✅ Connected to OpenAI Realtime API");
       
-      // Configure session using GA API format
+      // Configure session using CORRECT GA API format
       openaiWs.send(JSON.stringify({
         type: "session.update",
         session: {
           type: "realtime",
           model: "gpt-realtime",
           instructions: "You are a helpful meeting assistant. Respond briefly and conversationally. Keep responses under 10 words.",
-          voice: "alloy", // or "shimmer", "coral", "echo", "sage"
           modalities: ["text", "audio"],
           input_audio_format: "pcm16",
           output_audio_format: "pcm16",
           temperature: 0.8,
+          // CORRECT LOCATION for voice in GA API
+          voice: "alloy", // or "shimmer", "coral", "echo", "sage"
           turn_detection: {
             type: "server_vad",
             threshold: 0.5,
@@ -79,7 +84,7 @@ wss.on("connection", async (ws) => {
             break;
             
           case "response.output_audio.delta":
-            console.log("🔊 AI Audio Response Delta");
+            console.log("🔊 AI Audio Response Delta - Length:", event.delta?.length || 0);
             // Forward audio to client
             ws.send(JSON.stringify({
               type: "response.output_audio.delta",
@@ -102,7 +107,9 @@ wss.on("connection", async (ws) => {
             
           case "error":
             console.error("🔴 OpenAI Error:", event.error);
-            ws.send(JSON.stringify({ type: "error", error: event.error.message }));
+            if (event.error.code !== 'input_audio_buffer_commit_empty') {
+              ws.send(JSON.stringify({ type: "error", error: event.error.message }));
+            }
             break;
             
           default:
@@ -131,16 +138,65 @@ wss.on("connection", async (ws) => {
         const msg = JSON.parse(data);
         
         if (msg.type === "meeting_audio" && openaiWs.readyState === WebSocket.OPEN) {
-          // Send audio to OpenAI using GA API format
-          openaiWs.send(JSON.stringify({
-            type: "input_audio_buffer.append",
-            audio: msg.audio
-          }));
+          // Add audio to buffer
+          audioBuffer.push(msg.audio);
           
-          // Commit after sending audio
-          openaiWs.send(JSON.stringify({
-            type: "input_audio_buffer.commit",
-          }));
+          // Start collecting if not already
+          if (!isCollectingAudio) {
+            isCollectingAudio = true;
+            console.log("🎤 Started collecting audio...");
+          }
+          
+          // Clear any existing timer
+          if (commitTimer) clearTimeout(commitTimer);
+          
+          // Wait until we have enough audio (at least 15 chunks = ~300ms)
+          if (audioBuffer.length >= 15) {
+            console.log(`🎤 Collected ${audioBuffer.length} audio chunks, sending to OpenAI...`);
+            
+            // Send all buffered audio
+            for (const audioChunk of audioBuffer) {
+              openaiWs.send(JSON.stringify({
+                type: "input_audio_buffer.append",
+                audio: audioChunk
+              }));
+            }
+            
+            // Commit the audio
+            openaiWs.send(JSON.stringify({
+              type: "input_audio_buffer.commit",
+            }));
+            
+            console.log("🔔 Audio buffer committed");
+            
+            // Reset buffer
+            audioBuffer = [];
+            isCollectingAudio = false;
+          } else {
+            // Set timer to commit after timeout (force commit after 2 seconds)
+            commitTimer = setTimeout(() => {
+              if (audioBuffer.length > 0) {
+                console.log(`🎤 Timeout - committing ${audioBuffer.length} audio chunks...`);
+                
+                // Send all buffered audio
+                for (const audioChunk of audioBuffer) {
+                  openaiWs.send(JSON.stringify({
+                    type: "input_audio_buffer.append",
+                    audio: audioChunk
+                  }));
+                }
+                
+                // Commit the audio
+                openaiWs.send(JSON.stringify({
+                  type: "input_audio_buffer.commit",
+                }));
+                
+                console.log("🔔 Audio buffer committed (timeout)");
+                audioBuffer = [];
+                isCollectingAudio = false;
+              }
+            }, 2000);
+          }
         }
         
       } catch (e) {
@@ -151,6 +207,7 @@ wss.on("connection", async (ws) => {
     // Clean up on client disconnect
     ws.on("close", () => {
       console.log("🔴 Client WebSocket closed");
+      if (commitTimer) clearTimeout(commitTimer);
       if (openaiWs.readyState === WebSocket.OPEN) {
         openaiWs.close();
       }
