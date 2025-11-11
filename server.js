@@ -49,15 +49,15 @@ wss.on("connection", async (ws) => {
           type: "realtime",
           model: "gpt-realtime",
           instructions: "You are a helpful meeting assistant. Keep responses very brief - 1-2 sentences maximum. Respond conversationally.",
-          voice: "alloy", // Correct location in GA API
           input_audio_format: "pcm16",
           output_audio_format: "pcm16",
           temperature: 0.7,
+          voice: "alloy", // This should be at the session level in GA API
           turn_detection: {
             type: "server_vad",
-            threshold: 0.3, // Lower threshold for faster detection
-            prefix_padding_ms: 200, // Reduced padding
-            silence_duration_ms: 400 // Shorter silence detection
+            threshold: 0.3,
+            prefix_padding_ms: 200,
+            silence_duration_ms: 400
           }
         }
       }));
@@ -68,55 +68,32 @@ wss.on("connection", async (ws) => {
       try {
         const event = JSON.parse(message.toString());
         
-        // Handle different event types
-        switch (event.type) {
-          case "session.created":
-            console.log("✅ Session created");
-            break;
-            
-          case "session.updated":
-            console.log("✅ Session updated");
-            // Send ready signal to client
-            ws.send(JSON.stringify({ type: "ready", status: "connected" }));
-            break;
-            
-          case "response.output_audio.delta":
-            console.log("🔊 AI Audio Response - Length:", event.delta?.length || 0);
-            isSpeaking = true;
-            // Forward audio to client
-            ws.send(JSON.stringify({
-              type: "response.output_audio.delta",
-              delta: event.delta
-            }));
-            break;
-            
-          case "response.output_audio_transcript.delta":
-            console.log("💬 AI:", event.delta);
-            // Forward transcript to client
-            ws.send(JSON.stringify({
-              type: "response.output_audio_transcript.delta", 
-              delta: event.delta
-            }));
-            break;
-            
-          case "response.done":
-            console.log("✅ Response completed");
-            isSpeaking = false;
-            break;
-            
-          case "input_audio_buffer.speech_stopped":
-            console.log("🎤 Speech stopped detected");
-            // Force commit when speech stops
-            if (audioBuffer.length > 0) {
-              commitAudioBuffer();
-            }
-            break;
-            
-          case "error":
-            if (event.error.code !== 'input_audio_buffer_commit_empty') {
-              console.error("🔴 OpenAI Error:", event.error);
-            }
-            break;
+        if (event.type === "session.created") {
+          console.log("✅ Session created");
+        } else if (event.type === "session.updated") {
+          console.log("✅ Session updated");
+          ws.send(JSON.stringify({ type: "ready", status: "connected" }));
+        } else if (event.type === "response.output_audio.delta") {
+          console.log("🔊 AI Audio Response");
+          isSpeaking = true;
+          ws.send(JSON.stringify({
+            type: "response.output_audio.delta",
+            delta: event.delta
+          }));
+        } else if (event.type === "response.output_audio_transcript.delta") {
+          console.log("💬 AI:", event.delta);
+          ws.send(JSON.stringify({
+            type: "response.output_audio_transcript.delta", 
+            delta: event.delta
+          }));
+        } else if (event.type === "response.done") {
+          console.log("✅ Response completed");
+          isSpeaking = false;
+        } else if (event.type === "error") {
+          if (event.error.code !== 'input_audio_buffer_commit_empty' && 
+              event.error.code !== 'unknown_parameter') {
+            console.error("🔴 OpenAI Error:", event.error);
+          }
         }
       } catch (error) {
         console.error("Error parsing OpenAI message:", error);
@@ -166,16 +143,16 @@ wss.on("connection", async (ws) => {
           // Clear any existing timer
           if (commitTimer) clearTimeout(commitTimer);
           
-          // Commit immediately for faster response (reduced from 15 to 8 chunks)
+          // Commit immediately for faster response
           if (audioBuffer.length >= 8) {
             commitAudioBuffer();
           } else {
             // Set timer to commit after shorter timeout
             commitTimer = setTimeout(() => {
-              if (audioBuffer.length > 3) { // Reduced minimum chunks
+              if (audioBuffer.length > 3) {
                 commitAudioBuffer();
               }
-            }, 800); // Reduced from 2000ms to 800ms
+            }, 800);
           }
         }
         
