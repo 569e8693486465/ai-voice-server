@@ -96,8 +96,6 @@ const audioLevel = document.getElementById("audioLevel");
 
 let audioContext;
 let isAudioProcessing = false;
-let audioQueue = [];
-let isPlayingAudio = false;
 
 // Update audio level visualizer
 function updateAudioLevel(level) {
@@ -136,19 +134,13 @@ ws.onmessage = (event) => {
       aiStatus.className = "status-item status-listening";
       console.log("✅ OpenAI session ready");
     }
-    else if (msg.type === "response.output_audio.delta" && msg.delta) {
+    else if (msg.type === "response.complete") {
+      // Play complete response when OpenAI finishes
       aiStatus.textContent = "🔊 AI Speaking...";
       aiStatus.className = "status-item status-speaking";
-      playAudioChunk(msg.delta);
-    } 
-    else if (msg.type === "response.output_audio_transcript.delta" && msg.delta) {
-      aiResponse.textContent = "AI: " + (aiResponse.textContent.replace("AI: ", "") + msg.delta);
-    }
-    else if (msg.type === "response.done") {
-      aiStatus.textContent = "✅ AI Ready - Listening...";
-      aiStatus.className = "status-item status-listening";
-      // Clear queue when response is complete
-      audioQueue = [];
+      aiResponse.textContent = "AI: " + msg.transcript;
+      console.log(`🎯 Playing complete response: ${msg.audioBuffers.length} audio chunks`);
+      playCompleteAudio(msg.audioBuffers);
     }
     else if (msg.type === "input_audio_buffer.speech_started") {
       console.log("🎤 Speech detected by OpenAI VAD");
@@ -170,62 +162,72 @@ ws.onmessage = (event) => {
   }
 };
 
-// Queue audio chunks instead of playing immediately
-function playAudioChunk(base64Audio) {
-  audioQueue.push(base64Audio);
+// Play complete audio response
+async function playCompleteAudio(audioBuffers) {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
   
-  // Start playing if not already
-  if (!isPlayingAudio) {
-    processAudioQueue();
+  try {
+    // Combine all audio buffers into one
+    const combinedAudioData = await combineAudioBuffers(audioBuffers);
+    
+    // Create and play the combined audio buffer
+    const audioBuffer = audioContext.createBuffer(1, combinedAudioData.length, 24000);
+    audioBuffer.getChannelData(0).set(combinedAudioData);
+    
+    const source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioContext.destination);
+    source.onended = () => {
+      aiStatus.textContent = "✅ AI Ready - Listening...";
+      aiStatus.className = "status-item status-listening";
+      console.log("✅ Finished playing complete response");
+    };
+    source.start();
+    
+  } catch (error) {
+    console.error("Error playing complete audio:", error);
+    aiStatus.textContent = "✅ AI Ready - Listening...";
+    aiStatus.className = "status-item status-listening";
   }
 }
 
-// Process audio queue sequentially
-async function processAudioQueue() {
-  if (isPlayingAudio || audioQueue.length === 0) return;
-  
-  isPlayingAudio = true;
-  
-  while (audioQueue.length > 0) {
-    const base64Audio = audioQueue.shift();
-    await playSingleAudioChunk(base64Audio);
-  }
-  
-  isPlayingAudio = false;
-}
-
-// Play a single audio chunk
-function playSingleAudioChunk(base64Audio) {
+// Combine multiple audio buffers into one
+function combineAudioBuffers(audioBuffers) {
   return new Promise((resolve) => {
     try {
-      if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      // Calculate total length
+      let totalLength = 0;
+      const allChunks = [];
+      
+      for (const base64Audio of audioBuffers) {
+        const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
+        const chunkLength = audioData.length / 2; // 2 bytes per sample (16-bit)
+        totalLength += chunkLength;
+        allChunks.push(audioData);
       }
       
-      // Convert base64 to ArrayBuffer
-      const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
+      // Create combined Float32Array
+      const combined = new Float32Array(totalLength);
+      let offset = 0;
       
-      // Create audio buffer
-      const audioBuffer = audioContext.createBuffer(1, audioData.length / 2, 24000);
-      const channelData = audioBuffer.getChannelData(0);
-      
-      // Convert Int16 to Float32
-      const dataView = new DataView(audioData.buffer);
-      for (let i = 0; i < channelData.length; i++) {
-        const int16 = dataView.getInt16(i * 2, true);
-        channelData[i] = int16 / 32768.0;
+      for (const audioData of allChunks) {
+        const dataView = new DataView(audioData.buffer);
+        const chunkLength = audioData.length / 2;
+        
+        for (let i = 0; i < chunkLength; i++) {
+          const int16 = dataView.getInt16(i * 2, true);
+          combined[offset + i] = int16 / 32768.0;
+        }
+        offset += chunkLength;
       }
       
-      // Play the audio and resolve when done
-      const source = audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioContext.destination);
-      source.onended = () => resolve();
-      source.start();
+      resolve(combined);
       
     } catch (error) {
-      console.error("Error playing audio:", error);
-      resolve(); // Always resolve to continue queue
+      console.error("Error combining audio buffers:", error);
+      resolve(new Float32Array(0));
     }
   });
 }
