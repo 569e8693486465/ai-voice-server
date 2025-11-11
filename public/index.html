@@ -96,6 +96,8 @@ const audioLevel = document.getElementById("audioLevel");
 
 let audioContext;
 let isAudioProcessing = false;
+let audioQueue = [];
+let isPlayingAudio = false;
 
 // Update audio level visualizer
 function updateAudioLevel(level) {
@@ -145,6 +147,8 @@ ws.onmessage = (event) => {
     else if (msg.type === "response.done") {
       aiStatus.textContent = "✅ AI Ready - Listening...";
       aiStatus.className = "status-item status-listening";
+      // Clear queue when response is complete
+      audioQueue = [];
     }
     else if (msg.type === "input_audio_buffer.speech_started") {
       console.log("🎤 Speech detected by OpenAI VAD");
@@ -166,35 +170,64 @@ ws.onmessage = (event) => {
   }
 };
 
+// Queue audio chunks instead of playing immediately
 function playAudioChunk(base64Audio) {
-  try {
-    if (!audioContext) {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    
-    // Convert base64 to ArrayBuffer
-    const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
-    
-    // Create audio buffer (OpenAI uses 24kHz sample rate)
-    const audioBuffer = audioContext.createBuffer(1, audioData.length / 2, 24000);
-    const channelData = audioBuffer.getChannelData(0);
-    
-    // Convert Int16 to Float32 for Web Audio API
-    const dataView = new DataView(audioData.buffer);
-    for (let i = 0; i < channelData.length; i++) {
-      const int16 = dataView.getInt16(i * 2, true);
-      channelData[i] = int16 / 32768.0;
-    }
-    
-    // Play the audio
-    const source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(audioContext.destination);
-    source.start();
-    
-  } catch (error) {
-    console.error("Error playing audio:", error);
+  audioQueue.push(base64Audio);
+  
+  // Start playing if not already
+  if (!isPlayingAudio) {
+    processAudioQueue();
   }
+}
+
+// Process audio queue sequentially
+async function processAudioQueue() {
+  if (isPlayingAudio || audioQueue.length === 0) return;
+  
+  isPlayingAudio = true;
+  
+  while (audioQueue.length > 0) {
+    const base64Audio = audioQueue.shift();
+    await playSingleAudioChunk(base64Audio);
+  }
+  
+  isPlayingAudio = false;
+}
+
+// Play a single audio chunk
+function playSingleAudioChunk(base64Audio) {
+  return new Promise((resolve) => {
+    try {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      
+      // Convert base64 to ArrayBuffer
+      const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
+      
+      // Create audio buffer
+      const audioBuffer = audioContext.createBuffer(1, audioData.length / 2, 24000);
+      const channelData = audioBuffer.getChannelData(0);
+      
+      // Convert Int16 to Float32
+      const dataView = new DataView(audioData.buffer);
+      for (let i = 0; i < channelData.length; i++) {
+        const int16 = dataView.getInt16(i * 2, true);
+        channelData[i] = int16 / 32768.0;
+      }
+      
+      // Play the audio and resolve when done
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContext.destination);
+      source.onended = () => resolve();
+      source.start();
+      
+    } catch (error) {
+      console.error("Error playing audio:", error);
+      resolve(); // Always resolve to continue queue
+    }
+  });
 }
 
 // Audio conversion function
@@ -213,7 +246,7 @@ function float32ToPCM16(float32Array) {
   return btoa(binary);
 }
 
-// Initialize audio processing - SIMPLIFIED
+// Initialize audio processing
 async function initializeAudio() {
   try {
     audioStatus.textContent = "🎤 Accessing microphone...";
@@ -256,7 +289,6 @@ async function initializeAudio() {
         updateAudioLevel(average);
         
         // Send ALL audio to OpenAI - let OpenAI's VAD handle speech detection
-        // No custom silence detection - OpenAI does this better
         const audioBase64 = float32ToPCM16(inputData);
         ws.send(JSON.stringify({ 
           type: "input_audio_buffer.append",
