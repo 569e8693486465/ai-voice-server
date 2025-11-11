@@ -32,20 +32,6 @@
     .status-speaking { background: #f8d7da; color: #721c24; }
     .status-error { background: #f8d7da; color: #721c24; }
     
-    .audio-visualizer {
-      height: 20px;
-      background: #e9ecef;
-      border-radius: 10px;
-      margin: 20px 0;
-      overflow: hidden;
-    }
-    .audio-level {
-      height: 100%;
-      background: linear-gradient(90deg, #28a745, #ffc107, #dc3545);
-      width: 0%;
-      transition: width 0.1s ease;
-    }
-    
     h1 {
       color: #333;
       margin-bottom: 10px;
@@ -74,10 +60,6 @@
       🎤 Initializing audio...
     </div>
     
-    <div class="audio-visualizer">
-      <div id="audioLevel" class="audio-level"></div>
-    </div>
-    
     <div id="aiStatus" class="status-item status-connecting">
       ⏳ Waiting for AI connection...
     </div>
@@ -92,16 +74,9 @@ const connectionStatus = document.getElementById("connectionStatus");
 const audioStatus = document.getElementById("audioStatus");
 const aiStatus = document.getElementById("aiStatus");
 const aiResponse = document.getElementById("aiResponse");
-const audioLevel = document.getElementById("audioLevel");
 
 let audioContext;
 let isAudioProcessing = false;
-
-// Update audio level visualizer
-function updateAudioLevel(level) {
-  const width = Math.min(100, level * 500);
-  audioLevel.style.width = width + '%';
-}
 
 // Connect to your server
 const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
@@ -109,8 +84,6 @@ const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
 ws.onopen = () => {
   connectionStatus.textContent = "✅ Connected to server";
   connectionStatus.className = "status-item status-connected";
-  
-  console.log("✅ Connected to server - waiting for OpenAI session");
   initializeAudio();
 };
 
@@ -124,7 +97,7 @@ ws.onerror = (err) => {
   connectionStatus.className = "status-item status-error";
 };
 
-// Handle responses from OpenAI
+// Handle responses from OpenAI - SIMPLE
 ws.onmessage = (event) => {
   try {
     const msg = JSON.parse(event.data);
@@ -132,118 +105,82 @@ ws.onmessage = (event) => {
     if (msg.type === "session.updated") {
       aiStatus.textContent = "✅ AI Ready - Listening...";
       aiStatus.className = "status-item status-listening";
-      console.log("✅ OpenAI session ready");
     }
-    else if (msg.type === "response.complete") {
-      // Play complete response when OpenAI finishes
+    else if (msg.type === "response.output_audio.delta" && msg.delta) {
       aiStatus.textContent = "🔊 AI Speaking...";
       aiStatus.className = "status-item status-speaking";
-      aiResponse.textContent = "AI: " + msg.transcript;
-      console.log(`🎯 Playing complete response: ${msg.audioBuffers.length} audio chunks`);
-      playCompleteAudio(msg.audioBuffers);
+      // Play audio immediately as it comes - let the browser handle timing
+      playAudioChunk(msg.delta);
+    } 
+    else if (msg.type === "response.output_audio_transcript.delta" && msg.delta) {
+      aiResponse.textContent = "AI: " + msg.delta;
     }
-    else if (msg.type === "input_audio_buffer.speech_started") {
-      console.log("🎤 Speech detected by OpenAI VAD");
-    }
-    else if (msg.type === "input_audio_buffer.speech_stopped") {
-      console.log("🎤 Speech stopped - OpenAI will auto-process");
-    }
-    else if (msg.type === "input_audio_buffer.committed") {
-      console.log("✅ OpenAI auto-committed audio");
+    else if (msg.type === "response.done") {
+      aiStatus.textContent = "✅ AI Ready - Listening...";
+      aiStatus.className = "status-item status-listening";
     }
     else if (msg.type === "error") {
       aiStatus.textContent = "❌ AI Error";
       aiStatus.className = "status-item status-error";
       console.error("OpenAI error:", msg.error);
     }
-    
   } catch (error) {
     console.error("Error parsing message:", error);
   }
 };
 
-// Play complete audio response
-async function playCompleteAudio(audioBuffers) {
-  if (!audioContext) {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  
+// Simple audio playback - let browser handle the timing
+function playAudioChunk(base64Audio) {
   try {
-    // Combine all audio buffers into one
-    const combinedAudioData = await combineAudioBuffers(audioBuffers);
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
     
-    // Create and play the combined audio buffer
-    const audioBuffer = audioContext.createBuffer(1, combinedAudioData.length, 24000);
-    audioBuffer.getChannelData(0).set(combinedAudioData);
+    // Convert base64 to ArrayBuffer
+    const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
     
+    // Create audio buffer
+    const audioBuffer = audioContext.createBuffer(1, audioData.length / 2, 24000);
+    const channelData = audioBuffer.getChannelData(0);
+    
+    // Convert Int16 to Float32 (following OpenAI docs example)
+    const dataView = new DataView(audioData.buffer);
+    for (let i = 0; i < channelData.length; i++) {
+      const int16 = dataView.getInt16(i * 2, true);
+      channelData[i] = int16 / 32768.0;
+    }
+    
+    // Play immediately - browser will handle queuing
     const source = audioContext.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(audioContext.destination);
-    source.onended = () => {
-      aiStatus.textContent = "✅ AI Ready - Listening...";
-      aiStatus.className = "status-item status-listening";
-      console.log("✅ Finished playing complete response");
-    };
     source.start();
     
   } catch (error) {
-    console.error("Error playing complete audio:", error);
-    aiStatus.textContent = "✅ AI Ready - Listening...";
-    aiStatus.className = "status-item status-listening";
+    console.error("Error playing audio:", error);
   }
 }
 
-// Combine multiple audio buffers into one
-function combineAudioBuffers(audioBuffers) {
-  return new Promise((resolve) => {
-    try {
-      // Calculate total length
-      let totalLength = 0;
-      const allChunks = [];
-      
-      for (const base64Audio of audioBuffers) {
-        const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
-        const chunkLength = audioData.length / 2; // 2 bytes per sample (16-bit)
-        totalLength += chunkLength;
-        allChunks.push(audioData);
-      }
-      
-      // Create combined Float32Array
-      const combined = new Float32Array(totalLength);
-      let offset = 0;
-      
-      for (const audioData of allChunks) {
-        const dataView = new DataView(audioData.buffer);
-        const chunkLength = audioData.length / 2;
-        
-        for (let i = 0; i < chunkLength; i++) {
-          const int16 = dataView.getInt16(i * 2, true);
-          combined[offset + i] = int16 / 32768.0;
-        }
-        offset += chunkLength;
-      }
-      
-      resolve(combined);
-      
-    } catch (error) {
-      console.error("Error combining audio buffers:", error);
-      resolve(new Float32Array(0));
-    }
-  });
+// Audio conversion function (from OpenAI docs)
+function float32To16BitPCM(float32Array) {
+  const buffer = new ArrayBuffer(float32Array.length * 2);
+  const view = new DataView(buffer);
+  let offset = 0;
+  for (let i = 0; i < float32Array.length; i++, offset += 2) {
+    let s = Math.max(-1, Math.min(1, float32Array[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return buffer;
 }
 
-// Audio conversion function
-function float32ToPCM16(float32Array) {
-  const pcm16 = new Int16Array(float32Array.length);
-  for (let i = 0; i < float32Array.length; i++) {
-    const s = Math.max(-1, Math.min(1, float32Array[i]));
-    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-  }
-  // Convert to base64
-  const uint8 = new Uint8Array(pcm16.buffer);
+function base64EncodeAudio(float32Array) {
+  const arrayBuffer = float32To16BitPCM(float32Array);
   let binary = '';
-  for (let i = 0; i < uint8.length; i++) {
-    binary += String.fromCharCode(uint8[i]);
+  let bytes = new Uint8Array(arrayBuffer);
+  const chunkSize = 0x8000; // 32KB chunk size
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    let chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, chunk);
   }
   return btoa(binary);
 }
@@ -254,7 +191,7 @@ async function initializeAudio() {
     audioStatus.textContent = "🎤 Accessing microphone...";
     audioStatus.className = "status-item status-connecting";
     
-    // Get meeting audio stream (automatically provided by Recall.ai)
+    // Get meeting audio stream
     const mediaStream = await navigator.mediaDevices.getUserMedia({ 
       audio: {
         sampleRate: 24000,
@@ -272,7 +209,7 @@ async function initializeAudio() {
     audioContext = new AudioContext({ sampleRate: 24000 });
     const source = audioContext.createMediaStreamSource(mediaStream);
     
-    // Use ScriptProcessor for audio processing
+    // Process audio
     const processor = audioContext.createScriptProcessor(1024, 1, 1);
     
     processor.onaudioprocess = (event) => {
@@ -282,16 +219,8 @@ async function initializeAudio() {
       try {
         const inputData = event.inputBuffer.getChannelData(0);
         
-        // Calculate audio level for visualization
-        let sum = 0;
-        for (let i = 0; i < inputData.length; i++) {
-          sum += Math.abs(inputData[i]);
-        }
-        const average = sum / inputData.length;
-        updateAudioLevel(average);
-        
-        // Send ALL audio to OpenAI - let OpenAI's VAD handle speech detection
-        const audioBase64 = float32ToPCM16(inputData);
+        // Convert and send audio (following OpenAI docs exactly)
+        const audioBase64 = base64EncodeAudio(inputData);
         ws.send(JSON.stringify({ 
           type: "input_audio_buffer.append",
           audio: audioBase64 
@@ -307,7 +236,7 @@ async function initializeAudio() {
     source.connect(processor);
     processor.connect(audioContext.destination);
     
-    console.log("✅ Audio streaming started - sending all audio to OpenAI VAD");
+    console.log("✅ Audio streaming started");
 
   } catch (error) {
     console.error("Error accessing meeting audio:", error);
@@ -315,11 +244,6 @@ async function initializeAudio() {
     audioStatus.className = "status-item status-error";
   }
 }
-
-// Reset audio level visualizer when no audio
-setInterval(() => {
-  updateAudioLevel(0);
-}, 100);
 </script>
 </body>
 </html>
