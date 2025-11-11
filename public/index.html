@@ -3,40 +3,40 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Realtime AI Bot - GA API</title>
+  <title>AI Meeting Assistant</title>
   <style>
     body {
       font-family: Arial, sans-serif;
-      max-width: 800px;
+      max-width: 600px;
       margin: 0 auto;
       padding: 20px;
       background-color: #f5f5f5;
+      text-align: center;
     }
-    .status-box {
+    .status-container {
       background: white;
-      padding: 15px;
-      border-radius: 8px;
-      margin: 10px 0;
-      border-left: 4px solid #007bff;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      margin: 20px 0;
     }
-    .status-connected { border-left-color: #28a745; }
-    .status-error { border-left-color: #dc3545; }
-    .status-processing { border-left-color: #ffc107; }
-    #debug {
-      font-family: monospace;
-      font-size: 12px;
-      background: #1a1a1a;
-      color: #00ff00;
+    .status-item {
+      margin: 15px 0;
       padding: 10px;
-      border-radius: 4px;
-      min-height: 60px;
-      white-space: pre-wrap;
+      border-radius: 5px;
+      font-size: 16px;
     }
+    .status-connecting { background: #fff3cd; color: #856404; }
+    .status-connected { background: #d1edff; color: #004085; }
+    .status-listening { background: #d4edda; color: #155724; }
+    .status-speaking { background: #f8d7da; color: #721c24; }
+    .status-error { background: #f8d7da; color: #721c24; }
+    
     .audio-visualizer {
       height: 20px;
       background: #e9ecef;
       border-radius: 10px;
-      margin: 10px 0;
+      margin: 20px 0;
       overflow: hidden;
     }
     .audio-level {
@@ -45,135 +45,113 @@
       width: 0%;
       transition: width 0.1s ease;
     }
+    
+    h1 {
+      color: #333;
+      margin-bottom: 10px;
+    }
+    
+    .ai-response {
+      background: #f8f9fa;
+      border-left: 4px solid #007bff;
+      padding: 15px;
+      margin: 15px 0;
+      border-radius: 5px;
+      min-height: 20px;
+      font-style: italic;
+    }
   </style>
 </head>
 <body>
-<h2>🤖 Realtime AI Bot - GA API</h2>
-
-<div id="statusBox" class="status-box">
-  <strong>Status:</strong> <span id="status">Connecting to WebSocket...</span>
-</div>
-
-<div id="audioBox" class="status-box">
-  <strong>Audio:</strong> <span id="audioStatus">Initializing...</span>
-  <div class="audio-visualizer">
-    <div id="audioLevel" class="audio-level"></div>
+  <h1>🤖 AI Meeting Assistant</h1>
+  
+  <div class="status-container">
+    <div id="connectionStatus" class="status-item status-connecting">
+      🔄 Connecting to meeting...
+    </div>
+    
+    <div id="audioStatus" class="status-item status-connecting">
+      🎤 Initializing audio...
+    </div>
+    
+    <div class="audio-visualizer">
+      <div id="audioLevel" class="audio-level"></div>
+    </div>
+    
+    <div id="aiStatus" class="status-item status-connecting">
+      ⏳ Waiting for AI connection...
+    </div>
+    
+    <div id="aiResponse" class="ai-response">
+      AI responses will appear here...
+    </div>
   </div>
-</div>
-
-<div id="aiBox" class="status-box">
-  <strong>AI:</strong> <span id="aiStatus">Waiting for connection...</span>
-</div>
-
-<div class="status-box">
-  <strong>Debug Info:</strong>
-  <div id="debug">Initializing GA API connection...</div>
-</div>
 
 <script>
-const status = document.getElementById("status");
+const connectionStatus = document.getElementById("connectionStatus");
 const audioStatus = document.getElementById("audioStatus");
 const aiStatus = document.getElementById("aiStatus");
-const debugEl = document.getElementById("debug");
+const aiResponse = document.getElementById("aiResponse");
 const audioLevel = document.getElementById("audioLevel");
-const statusBox = document.getElementById("statusBox");
-const audioBox = document.getElementById("audioBox");
-const aiBox = document.getElementById("aiBox");
 
 let audioContext;
 let isAudioProcessing = false;
 let audioChunkCount = 0;
 let lastAudioTime = 0;
 
-// Update debug display
-function updateDebug(message) {
-  const timestamp = new Date().toLocaleTimeString();
-  debugEl.textContent = `[${timestamp}] ${message}\n` + debugEl.textContent.substring(0, 1000);
-}
-
-// Update status box colors
-function updateStatus(element, type) {
-  element.className = 'status-box ' + type;
-}
-
 // Update audio level visualizer
 function updateAudioLevel(level) {
-  const width = Math.min(100, level * 500); // Scale the level
+  const width = Math.min(100, level * 500);
   audioLevel.style.width = width + '%';
 }
 
 // Connect to your server
-updateDebug("Connecting to WebSocket server...");
 const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
 
 ws.onopen = () => {
-  status.textContent = "✅ Connected to WebSocket";
-  updateStatus(statusBox, 'status-connected');
-  updateDebug("WebSocket connected successfully - waiting for OpenAI...");
+  connectionStatus.textContent = "✅ Connected to meeting";
+  connectionStatus.className = "status-item status-connected";
   initializeAudio();
 };
 
 ws.onclose = () => {
-  status.textContent = "❌ Disconnected from server";
-  updateStatus(statusBox, 'status-error');
-  updateDebug("Server connection closed");
+  connectionStatus.textContent = "❌ Disconnected from meeting";
+  connectionStatus.className = "status-item status-error";
 };
 
 ws.onerror = (err) => {
-  status.textContent = "❌ WebSocket error";
-  updateStatus(statusBox, 'status-error');
-  updateDebug("WebSocket error: " + JSON.stringify(err));
-  console.error("WebSocket error:", err);
+  connectionStatus.textContent = "❌ Connection error";
+  connectionStatus.className = "status-item status-error";
 };
 
-// Handle ALL responses from OpenAI GA API
+// Handle responses from OpenAI GA API
 ws.onmessage = (event) => {
   try {
     const msg = JSON.parse(event.data);
-    console.log("Received GA API event:", msg.type, msg);
     
     if (msg.type === "ready") {
-      aiStatus.textContent = "✅ Ready and listening";
-      updateStatus(aiBox, 'status-connected');
-      updateDebug("OpenAI GA API connected and ready");
+      aiStatus.textContent = "✅ AI Ready - Listening...";
+      aiStatus.className = "status-item status-listening";
     }
-    // UPDATED FOR GA API: response.output_audio.delta
     else if (msg.type === "response.output_audio.delta" && msg.delta) {
-      aiStatus.textContent = "🔊 Speaking...";
-      updateStatus(aiBox, 'status-processing');
-      updateDebug("AI audio response received from GA API");
+      aiStatus.textContent = "🔊 AI Speaking...";
+      aiStatus.className = "status-item status-speaking";
       playAudioChunk(msg.delta);
     } 
-    // UPDATED FOR GA API: response.output_audio_transcript.delta
     else if (msg.type === "response.output_audio_transcript.delta" && msg.delta) {
-      aiStatus.textContent = "💬 " + msg.delta;
-      updateDebug("AI transcript: " + msg.delta);
-      console.log("AI is saying:", msg.delta);
+      aiResponse.textContent = "AI: " + (aiResponse.textContent.replace("AI: ", "") + msg.delta);
     }
     else if (msg.type === "response.done") {
-      aiStatus.textContent = "✅ Response completed";
-      updateStatus(aiBox, 'status-connected');
-      updateDebug("AI response completed");
-    }
-    else if (msg.type === "session.updated") {
-      updateDebug("OpenAI GA API session configured");
-    }
-    else if (msg.type === "input_audio_buffer.committed") {
-      updateDebug("Audio committed to OpenAI GA API");
+      aiStatus.textContent = "✅ AI Ready - Listening...";
+      aiStatus.className = "status-item status-listening";
     }
     else if (msg.type === "error") {
       aiStatus.textContent = "❌ AI Error";
-      updateStatus(aiBox, 'status-error');
-      updateDebug("GA API Error: " + msg.error);
-      console.error("Server error:", msg.error);
-    }
-    else {
-      updateDebug("Received GA API event: " + msg.type);
+      aiStatus.className = "status-item status-error";
     }
     
   } catch (error) {
     console.error("Error parsing message:", error);
-    updateDebug("Parse error: " + error.message);
   }
 };
 
@@ -193,8 +171,8 @@ function playAudioChunk(base64Audio) {
     // Convert Int16 to Float32 for Web Audio API
     const dataView = new DataView(audioData.buffer);
     for (let i = 0; i < channelData.length; i++) {
-      const int16 = dataView.getInt16(i * 2, true); // little-endian
-      channelData[i] = int16 / 32768.0; // Convert to float
+      const int16 = dataView.getInt16(i * 2, true);
+      channelData[i] = int16 / 32768.0;
     }
     
     // Play the audio
@@ -203,15 +181,12 @@ function playAudioChunk(base64Audio) {
     source.connect(audioContext.destination);
     source.start();
     
-    updateDebug("✅ Played AI audio: " + audioData.length + " bytes");
-    
   } catch (error) {
-    console.error("❌ Error playing audio:", error);
-    updateDebug("Audio play error: " + error.message);
+    console.error("Error playing audio:", error);
   }
 }
 
-// Better audio conversion function
+// Audio conversion function
 function float32ToPCM16(float32Array) {
   const pcm16 = new Int16Array(float32Array.length);
   for (let i = 0; i < float32Array.length; i++) {
@@ -230,14 +205,13 @@ function float32ToPCM16(float32Array) {
 // Initialize audio processing
 async function initializeAudio() {
   try {
-    audioStatus.textContent = "🎤 Requesting microphone access...";
-    updateStatus(audioBox, 'status-processing');
-    updateDebug("Initializing audio system for GA API...");
+    audioStatus.textContent = "🎤 Accessing microphone...";
+    audioStatus.className = "status-item status-connecting";
     
     // Get meeting audio stream (automatically provided by Recall.ai)
     const mediaStream = await navigator.mediaDevices.getUserMedia({ 
       audio: {
-        sampleRate: 24000, // Match OpenAI's expected sample rate
+        sampleRate: 24000,
         channelCount: 1,
         echoCancellation: false,
         noiseSuppression: false,
@@ -245,16 +219,15 @@ async function initializeAudio() {
       }
     });
     
-    audioStatus.textContent = "✅ Microphone access granted";
-    updateStatus(audioBox, 'status-connected');
-    updateDebug("Microphone access granted - starting audio processing for GA API");
+    audioStatus.textContent = "✅ Microphone active - Speak normally";
+    audioStatus.className = "status-item status-listening";
     
     // Initialize audio context
     audioContext = new AudioContext({ sampleRate: 24000 });
     const source = audioContext.createMediaStreamSource(mediaStream);
     
     // Use ScriptProcessor for audio processing
-    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    const processor = audioContext.createScriptProcessor(1024, 1, 1);
     
     processor.onaudioprocess = (event) => {
       if (isAudioProcessing || ws.readyState !== WebSocket.OPEN) return;
@@ -281,7 +254,7 @@ async function initializeAudio() {
         }
         
         // Only send if audio is above threshold (speech detected)
-        if (hasAudio && average > 0.02) {
+        if (hasAudio && average > 0.01) {
           const audioBase64 = float32ToPCM16(inputData);
           ws.send(JSON.stringify({ 
             type: "meeting_audio", 
@@ -289,16 +262,9 @@ async function initializeAudio() {
           }));
           audioChunkCount++;
           lastAudioTime = Date.now();
-          
-          // Update audio status periodically
-          if (audioChunkCount % 10 === 0) {
-            audioStatus.textContent = `✅ Streaming audio (${audioChunkCount} chunks)`;
-            updateDebug(`Audio chunk ${audioChunkCount} sent to GA API (volume: ${Math.round(average * 100)}%)`);
-          }
         }
       } catch (error) {
         console.error("Audio processing error:", error);
-        updateDebug("Audio processing error: " + error.message);
       }
       
       isAudioProcessing = false;
@@ -307,47 +273,14 @@ async function initializeAudio() {
     source.connect(processor);
     processor.connect(audioContext.destination);
     
-    updateDebug("✅ Audio processing started successfully for GA API");
-    console.log("✅ Audio streaming started for GA API");
+    console.log("✅ Audio streaming started");
 
   } catch (error) {
-    console.error("❌ Error accessing meeting audio:", error);
-    audioStatus.textContent = "❌ Failed to get meeting audio";
-    updateStatus(audioBox, 'status-error');
-    updateDebug("Microphone error: " + error.message);
+    console.error("Error accessing meeting audio:", error);
+    audioStatus.textContent = "❌ Microphone access failed";
+    audioStatus.className = "status-item status-error";
   }
 }
-
-// Test audio playback
-function testAudioPlayback() {
-  if (!audioContext) {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  
-  const oscillator = audioContext.createOscillator();
-  oscillator.type = 'sine';
-  oscillator.frequency.setValueAtTime(440, audioContext.currentTime);
-  oscillator.connect(audioContext.destination);
-  oscillator.start();
-  oscillator.stop(audioContext.currentTime + 0.1);
-  
-  updateDebug("Audio context test completed");
-}
-
-// Test after a short delay
-setTimeout(() => {
-  testAudioPlayback();
-}, 1000);
-
-// Periodic status update
-setInterval(() => {
-  if (ws.readyState === WebSocket.OPEN) {
-    const now = new Date().toLocaleTimeString();
-    const timeSinceAudio = Date.now() - lastAudioTime;
-    const statusMsg = timeSinceAudio < 5000 ? "Active" : "Waiting for speech";
-    updateDebug(`Heartbeat - ${now} - Audio chunks: ${audioChunkCount} - Status: ${statusMsg}`);
-  }
-}, 30000);
 
 // Reset audio level visualizer when no audio
 setInterval(() => {
