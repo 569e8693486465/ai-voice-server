@@ -54,10 +54,17 @@ wss.on("connection", async (ws) => {
     ws.close();
   });
 
-  // Relay: Client -> OpenAI
+  // Relay: Client -> OpenAI (but handle session.update differently)
   const messageHandler = (data) => {
     try {
       const event = JSON.parse(data);
+      
+      // Don't forward session.update from client - we handle it on server
+      if (event.type === "session.update") {
+        console.log("🟡 Ignoring session.update from client (already handled by server)");
+        return;
+      }
+      
       console.log(`🟡 Client -> OpenAI: ${event.type}`);
       openaiWs.send(JSON.stringify(event));
     } catch (error) {
@@ -80,27 +87,43 @@ wss.on("connection", async (ws) => {
     }
   });
 
-  // Wait for OpenAI connection
+  // Wait for OpenAI connection and send session config
   openaiWs.on("open", () => {
     console.log("✅ Connected to OpenAI");
     
-    // Send session configuration
+    // Send session configuration from SERVER only
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: {
         type: "realtime",
         model: "gpt-realtime",
-        instructions: "You are a helpful meeting assistant. Respond briefly in English.",
+        instructions: "You are a helpful meeting assistant. Respond briefly in English. Keep responses under 10 words.",
         voice: "alloy",
         input_audio_format: "pcm16",
         output_audio_format: "pcm16",
-        temperature: 0.7
+        temperature: 0.7,
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 500
+        }
       }
     }));
+    
+    console.log("✅ Session configuration sent from server");
 
-    // Process queued messages
+    // Process queued messages (except session.update)
     while (messageQueue.length) {
-      messageHandler(messageQueue.shift());
+      const data = messageQueue.shift();
+      try {
+        const event = JSON.parse(data);
+        if (event.type !== "session.update") {
+          openaiWs.send(JSON.stringify(event));
+        }
+      } catch (error) {
+        console.error("Error processing queued message:", error);
+      }
     }
   });
 });
