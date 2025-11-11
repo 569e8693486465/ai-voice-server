@@ -33,13 +33,42 @@ wss.on("connection", async (ws) => {
   });
 
   const messageQueue = [];
+  let currentAudioBuffers = [];
+  let currentTranscript = "";
 
-  // Relay: OpenAI -> Client
+  // Relay: OpenAI -> Client (with buffering)
   openaiWs.on("message", (data) => {
     try {
       const event = JSON.parse(data);
-      console.log(`🔵 OpenAI -> Client: ${event.type}`);
-      ws.send(JSON.stringify(event));
+      
+      if (event.type === "response.output_audio.delta" && event.delta) {
+        // Buffer audio chunks
+        currentAudioBuffers.push(event.delta);
+        console.log(`🔵 Buffering audio chunk (${currentAudioBuffers.length} total)`);
+      }
+      else if (event.type === "response.output_audio_transcript.delta" && event.delta) {
+        // Buffer transcript
+        currentTranscript += event.delta;
+      }
+      else if (event.type === "response.done") {
+        // Send complete response to client
+        console.log(`✅ Response complete - Sending ${currentAudioBuffers.length} audio buffers`);
+        ws.send(JSON.stringify({
+          type: "response.complete",
+          audioBuffers: currentAudioBuffers,
+          transcript: currentTranscript
+        }));
+        
+        // Reset buffers
+        currentAudioBuffers = [];
+        currentTranscript = "";
+      }
+      else {
+        // Forward other events immediately
+        console.log(`🔵 OpenAI -> Client: ${event.type}`);
+        ws.send(JSON.stringify(event));
+      }
+      
     } catch (error) {
       console.error("Error parsing OpenAI message:", error);
     }
@@ -54,14 +83,13 @@ wss.on("connection", async (ws) => {
     ws.close();
   });
 
-  // Relay: Client -> OpenAI (but handle session.update differently)
+  // Relay: Client -> OpenAI
   const messageHandler = (data) => {
     try {
       const event = JSON.parse(data);
       
-      // Don't forward session.update from client - we handle it on server
       if (event.type === "session.update") {
-        console.log("🟡 Ignoring session.update from client (already handled by server)");
+        console.log("🟡 Ignoring session.update from client");
         return;
       }
       
@@ -91,7 +119,6 @@ wss.on("connection", async (ws) => {
   openaiWs.on("open", () => {
     console.log("✅ Connected to OpenAI");
     
-    // Send session configuration from SERVER only
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: {
@@ -113,7 +140,7 @@ wss.on("connection", async (ws) => {
     
     console.log("✅ Session configuration sent from server");
 
-    // Process queued messages (except session.update)
+    // Process queued messages
     while (messageQueue.length) {
       const data = messageQueue.shift();
       try {
