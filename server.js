@@ -32,46 +32,9 @@ wss.on("connection", async (ws) => {
     },
   });
 
-  const messageQueue = [];
-  let currentAudioBuffers = [];
-  let currentTranscript = "";
-
-  // Relay: OpenAI -> Client (with buffering)
+  // Simple relay - just forward messages
   openaiWs.on("message", (data) => {
-    try {
-      const event = JSON.parse(data);
-      
-      if (event.type === "response.output_audio.delta" && event.delta) {
-        // Buffer audio chunks
-        currentAudioBuffers.push(event.delta);
-        console.log(`🔵 Buffering audio chunk (${currentAudioBuffers.length} total)`);
-      }
-      else if (event.type === "response.output_audio_transcript.delta" && event.delta) {
-        // Buffer transcript
-        currentTranscript += event.delta;
-      }
-      else if (event.type === "response.done") {
-        // Send complete response to client
-        console.log(`✅ Response complete - Sending ${currentAudioBuffers.length} audio buffers`);
-        ws.send(JSON.stringify({
-          type: "response.complete",
-          audioBuffers: currentAudioBuffers,
-          transcript: currentTranscript
-        }));
-        
-        // Reset buffers
-        currentAudioBuffers = [];
-        currentTranscript = "";
-      }
-      else {
-        // Forward other events immediately
-        console.log(`🔵 OpenAI -> Client: ${event.type}`);
-        ws.send(JSON.stringify(event));
-      }
-      
-    } catch (error) {
-      console.error("Error parsing OpenAI message:", error);
-    }
+    ws.send(data); // Forward raw data without parsing
   });
 
   openaiWs.on("error", (err) => {
@@ -83,28 +46,10 @@ wss.on("connection", async (ws) => {
     ws.close();
   });
 
-  // Relay: Client -> OpenAI
-  const messageHandler = (data) => {
-    try {
-      const event = JSON.parse(data);
-      
-      if (event.type === "session.update") {
-        console.log("🟡 Ignoring session.update from client");
-        return;
-      }
-      
-      console.log(`🟡 Client -> OpenAI: ${event.type}`);
-      openaiWs.send(JSON.stringify(event));
-    } catch (error) {
-      console.error("Error parsing client message:", error);
-    }
-  };
-
+  // Forward all client messages to OpenAI
   ws.on("message", (data) => {
-    if (openaiWs.readyState !== WebSocket.OPEN) {
-      messageQueue.push(data);
-    } else {
-      messageHandler(data);
+    if (openaiWs.readyState === WebSocket.OPEN) {
+      openaiWs.send(data);
     }
   });
 
@@ -115,7 +60,7 @@ wss.on("connection", async (ws) => {
     }
   });
 
-  // Wait for OpenAI connection and send session config
+  // Configure session when OpenAI connects
   openaiWs.on("open", () => {
     console.log("✅ Connected to OpenAI");
     
@@ -124,7 +69,7 @@ wss.on("connection", async (ws) => {
       session: {
         type: "realtime",
         model: "gpt-realtime",
-        instructions: "You are a helpful meeting assistant. Respond briefly in English. Keep responses under 10 words.",
+        instructions: "You are a helpful meeting assistant. Respond briefly in English.",
         voice: "alloy",
         input_audio_format: "pcm16",
         output_audio_format: "pcm16",
@@ -137,21 +82,6 @@ wss.on("connection", async (ws) => {
         }
       }
     }));
-    
-    console.log("✅ Session configuration sent from server");
-
-    // Process queued messages
-    while (messageQueue.length) {
-      const data = messageQueue.shift();
-      try {
-        const event = JSON.parse(data);
-        if (event.type !== "session.update") {
-          openaiWs.send(JSON.stringify(event));
-        }
-      } catch (error) {
-        console.error("Error processing queued message:", error);
-      }
-    }
   });
 });
 
