@@ -67,7 +67,7 @@
   
   <div class="status-container">
     <div id="connectionStatus" class="status-item status-connecting">
-      🔄 Connecting to meeting...
+      🔄 Connecting to server...
     </div>
     
     <div id="audioStatus" class="status-item status-connecting">
@@ -109,13 +109,35 @@ function updateAudioLevel(level) {
 const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
 
 ws.onopen = () => {
-  connectionStatus.textContent = "✅ Connected to meeting";
+  connectionStatus.textContent = "✅ Connected to server";
   connectionStatus.className = "status-item status-connected";
+  
+  // Send session configuration to OpenAI
+  ws.send(JSON.stringify({
+    type: "session.update",
+    session: {
+      type: "realtime",
+      model: "gpt-realtime",
+      instructions: "You are a helpful meeting assistant. Respond briefly in English. Keep responses under 10 words.",
+      voice: "alloy",
+      input_audio_format: "pcm16",
+      output_audio_format: "pcm16",
+      temperature: 0.7,
+      turn_detection: {
+        type: "server_vad",
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 500
+      }
+    }
+  }));
+  
+  console.log("✅ Session configuration sent");
   initializeAudio();
 };
 
 ws.onclose = () => {
-  connectionStatus.textContent = "❌ Disconnected from meeting";
+  connectionStatus.textContent = "❌ Disconnected from server";
   connectionStatus.className = "status-item status-error";
 };
 
@@ -124,14 +146,15 @@ ws.onerror = (err) => {
   connectionStatus.className = "status-item status-error";
 };
 
-// Handle responses from OpenAI GA API
+// Handle responses from OpenAI
 ws.onmessage = (event) => {
   try {
     const msg = JSON.parse(event.data);
     
-    if (msg.type === "ready") {
+    if (msg.type === "session.updated") {
       aiStatus.textContent = "✅ AI Ready - Listening...";
       aiStatus.className = "status-item status-listening";
+      console.log("✅ OpenAI session ready");
     }
     else if (msg.type === "response.output_audio.delta" && msg.delta) {
       aiStatus.textContent = "🔊 AI Speaking...";
@@ -144,10 +167,18 @@ ws.onmessage = (event) => {
     else if (msg.type === "response.done") {
       aiStatus.textContent = "✅ AI Ready - Listening...";
       aiStatus.className = "status-item status-listening";
+      aiResponse.textContent = "AI responses will appear here...";
+    }
+    else if (msg.type === "input_audio_buffer.speech_started") {
+      console.log("🎤 Speech detected");
+    }
+    else if (msg.type === "input_audio_buffer.speech_stopped") {
+      console.log("🎤 Speech stopped");
     }
     else if (msg.type === "error") {
       aiStatus.textContent = "❌ AI Error";
       aiStatus.className = "status-item status-error";
+      console.error("OpenAI error:", msg.error);
     }
     
   } catch (error) {
@@ -257,7 +288,7 @@ async function initializeAudio() {
         if (hasAudio && average > 0.01) {
           const audioBase64 = float32ToPCM16(inputData);
           ws.send(JSON.stringify({ 
-            type: "meeting_audio", 
+            type: "input_audio_buffer.append",
             audio: audioBase64 
           }));
           audioChunkCount++;
