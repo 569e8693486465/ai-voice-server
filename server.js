@@ -1,7 +1,6 @@
 import express from "express";
 import http from "http";
 import WebSocket, { WebSocketServer } from "ws";
-import fetch from "node-fetch";
 import dotenv from "dotenv";
 
 dotenv.config();
