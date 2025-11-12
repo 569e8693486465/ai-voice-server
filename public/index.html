@@ -96,7 +96,8 @@ const audioLevel = document.getElementById("audioLevel");
 
 let audioContext;
 let isAudioProcessing = false;
-let currentAudioSource = null;
+let currentAudioSource = null; // Track current audio playback
+let isPlayingAudio = false; // Track if audio is currently playing
 
 // Update audio level visualizer
 function updateAudioLevel(level) {
@@ -135,13 +136,15 @@ ws.onmessage = (event) => {
       aiStatus.className = "status-item status-listening";
       console.log("✅ OpenAI session ready");
     }
-    else if (msg.type === "response.interrupt") {
-      // Stop any current audio playback immediately
-      stopCurrentAudio();
-      aiStatus.textContent = "⏹️ AI Interrupted - Listening...";
-      aiStatus.className = "status-item status-listening";
-      aiResponse.textContent = "AI responses will appear here...";
-      console.log("⏹️ AI response interrupted by user");
+    else if (msg.type === "response.output_audio.delta" || 
+             msg.type === "response.output_audio_transcript.delta") {
+      // Stop any current audio playback when new response starts
+      if (isPlayingAudio && currentAudioSource) {
+        console.log("🛑 Stopping current audio for new response");
+        currentAudioSource.stop();
+        currentAudioSource = null;
+        isPlayingAudio = false;
+      }
     }
     else if (msg.type === "response.complete") {
       // Play complete response when OpenAI finishes
@@ -152,10 +155,20 @@ ws.onmessage = (event) => {
       playCompleteAudio(msg.audioBuffers);
     }
     else if (msg.type === "input_audio_buffer.speech_started") {
-      console.log("🎤 User started speaking");
+      console.log("🎤 Speech detected by OpenAI VAD");
+      
+      // Stop any current AI speech when user starts speaking
+      if (isPlayingAudio && currentAudioSource) {
+        console.log("🛑 User interruption - stopping AI speech");
+        currentAudioSource.stop();
+        currentAudioSource = null;
+        isPlayingAudio = false;
+        aiStatus.textContent = "👂 Listening to user...";
+        aiStatus.className = "status-item status-listening";
+      }
     }
     else if (msg.type === "input_audio_buffer.speech_stopped") {
-      console.log("🎤 User stopped speaking - OpenAI will auto-process");
+      console.log("🎤 Speech stopped - OpenAI will auto-process");
     }
     else if (msg.type === "input_audio_buffer.committed") {
       console.log("✅ OpenAI auto-committed audio");
@@ -171,51 +184,55 @@ ws.onmessage = (event) => {
   }
 };
 
-// Stop current audio playback immediately
-function stopCurrentAudio() {
+// Play complete audio response
+async function playCompleteAudio(audioBuffers) {
+  // Stop any currently playing audio immediately
   if (currentAudioSource) {
     try {
       currentAudioSource.stop();
       currentAudioSource = null;
     } catch (error) {
-      // Ignore errors from stopping already finished audio
+      console.log("Stopped previous audio");
     }
   }
-}
-
-// Play complete audio response
-async function playCompleteAudio(audioBuffers) {
+  
   if (!audioContext) {
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
   }
-  
-  // Stop any current playback first
-  stopCurrentAudio();
   
   try {
     // Combine all audio buffers into one
     const combinedAudioData = await combineAudioBuffers(audioBuffers);
     
+    if (combinedAudioData.length === 0) {
+      throw new Error("Empty audio data");
+    }
+    
     // Create and play the combined audio buffer
     const audioBuffer = audioContext.createBuffer(1, combinedAudioData.length, 24000);
     audioBuffer.getChannelData(0).set(combinedAudioData);
     
-    currentAudioSource = audioContext.createBufferSource();
-    currentAudioSource.buffer = audioBuffer;
-    currentAudioSource.connect(audioContext.destination);
-    currentAudioSource.onended = () => {
+    const source = audioContext.createBufferSource();
+    currentAudioSource = source; // Track current source
+    isPlayingAudio = true;
+    
+    source.buffer = audioBuffer;
+    source.connect(audioContext.destination);
+    source.onended = () => {
+      isPlayingAudio = false;
+      currentAudioSource = null;
       aiStatus.textContent = "✅ AI Ready - Listening...";
       aiStatus.className = "status-item status-listening";
-      currentAudioSource = null;
       console.log("✅ Finished playing complete response");
     };
-    currentAudioSource.start();
+    source.start();
     
   } catch (error) {
     console.error("Error playing complete audio:", error);
+    isPlayingAudio = false;
+    currentAudioSource = null;
     aiStatus.textContent = "✅ AI Ready - Listening...";
     aiStatus.className = "status-item status-listening";
-    currentAudioSource = null;
   }
 }
 
@@ -315,6 +332,16 @@ async function initializeAudio() {
         }
         const average = sum / inputData.length;
         updateAudioLevel(average);
+        
+        // Stop AI speech when user starts speaking (based on audio level)
+        if (average > 0.05 && isPlayingAudio && currentAudioSource) {
+          console.log("🛑 User audio detected - stopping AI speech");
+          currentAudioSource.stop();
+          currentAudioSource = null;
+          isPlayingAudio = false;
+          aiStatus.textContent = "👂 Listening to user...";
+          aiStatus.className = "status-item status-listening";
+        }
         
         // Send ALL audio to OpenAI - let OpenAI's VAD handle speech detection
         const audioBase64 = float32ToPCM16(inputData);
