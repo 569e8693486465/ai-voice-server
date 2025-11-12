@@ -35,6 +35,8 @@ wss.on("connection", async (ws) => {
   const messageQueue = [];
   let currentAudioBuffers = [];
   let currentTranscript = "";
+  let isAISpeaking = false;
+  let currentResponseId = null;
 
   // Relay: OpenAI -> Client (with buffering)
   openaiWs.on("message", (data) => {
@@ -42,26 +44,64 @@ wss.on("connection", async (ws) => {
       const event = JSON.parse(data);
       
       if (event.type === "response.output_audio.delta" && event.delta) {
-        // Buffer audio chunks
-        currentAudioBuffers.push(event.delta);
-        console.log(`🔵 Buffering audio chunk (${currentAudioBuffers.length} total)`);
+        // Buffer audio chunks only if we're still in the same response
+        if (isAISpeaking && event.response_id === currentResponseId) {
+          currentAudioBuffers.push(event.delta);
+          console.log(`🔵 Buffering audio chunk (${currentAudioBuffers.length} total)`);
+        }
       }
       else if (event.type === "response.output_audio_transcript.delta" && event.delta) {
-        // Buffer transcript
-        currentTranscript += event.delta;
+        // Buffer transcript only if we're still in the same response
+        if (isAISpeaking && event.response_id === currentResponseId) {
+          currentTranscript += event.delta;
+        }
       }
-      else if (event.type === "response.done") {
-        // Send complete response to client
-        console.log(`✅ Response complete - Sending ${currentAudioBuffers.length} audio buffers`);
-        ws.send(JSON.stringify({
-          type: "response.complete",
-          audioBuffers: currentAudioBuffers,
-          transcript: currentTranscript
-        }));
-        
-        // Reset buffers
+      else if (event.type === "response.created") {
+        // New response started - reset buffers and mark as speaking
+        isAISpeaking = true;
+        currentResponseId = event.response_id;
         currentAudioBuffers = [];
         currentTranscript = "";
+        console.log("🎯 New AI response started");
+        
+        // Tell client to stop any current playback
+        ws.send(JSON.stringify({
+          type: "response.interrupt"
+        }));
+      }
+      else if (event.type === "response.done") {
+        // Send complete response to client only if this is the current response
+        if (isAISpeaking && event.response_id === currentResponseId) {
+          console.log(`✅ Response complete - Sending ${currentAudioBuffers.length} audio buffers`);
+          ws.send(JSON.stringify({
+            type: "response.complete",
+            audioBuffers: currentAudioBuffers,
+            transcript: currentTranscript
+          }));
+        }
+        
+        // Reset speaking state
+        isAISpeaking = false;
+        currentResponseId = null;
+        currentAudioBuffers = [];
+        currentTranscript = "";
+      }
+      else if (event.type === "input_audio_buffer.speech_started") {
+        console.log("🎤 User started speaking - interrupting AI if needed");
+        
+        // Interrupt AI when user starts speaking
+        if (isAISpeaking) {
+          console.log("⏹️ Interrupting current AI response");
+          isAISpeaking = false;
+          currentResponseId = null;
+          currentAudioBuffers = [];
+          currentTranscript = "";
+          
+          // Tell client to stop playback immediately
+          ws.send(JSON.stringify({
+            type: "response.interrupt"
+          }));
+        }
       }
       else {
         // Forward other events immediately
