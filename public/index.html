@@ -3,376 +3,357 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Meeting Assistant</title>
+  <title>HeyGen Avatar for Google Meet</title>
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
   <style>
     body {
       font-family: Arial, sans-serif;
-      max-width: 600px;
+      max-width: 1200px;
       margin: 0 auto;
       padding: 20px;
-      background-color: #f5f5f5;
-      text-align: center;
+      background: #f5f5f5;
     }
-    .status-container {
+    .container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    .panel {
       background: white;
       padding: 20px;
       border-radius: 10px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-      margin: 20px 0;
     }
-    .status-item {
-      margin: 15px 0;
+    .video-container {
+      grid-column: 1 / -1;
+    }
+    #avatarVideo {
+      width: 100%;
+      max-width: 800px;
+      height: 450px;
+      border: 3px solid #333;
+      border-radius: 10px;
+      background: #000;
+    }
+    .status {
       padding: 10px;
       border-radius: 5px;
-      font-size: 16px;
+      margin: 10px 0;
+      font-weight: bold;
     }
     .status-connecting { background: #fff3cd; color: #856404; }
-    .status-connected { background: #d1edff; color: #004085; }
-    .status-listening { background: #d4edda; color: #155724; }
-    .status-speaking { background: #f8d7da; color: #721c24; }
+    .status-connected { background: #d4edda; color: #155724; }
     .status-error { background: #f8d7da; color: #721c24; }
-    
-    .audio-visualizer {
-      height: 20px;
-      background: #e9ecef;
-      border-radius: 10px;
-      margin: 20px 0;
-      overflow: hidden;
-    }
-    .audio-level {
-      height: 100%;
-      background: linear-gradient(90deg, #28a745, #ffc107, #dc3545);
-      width: 0%;
-      transition: width 0.1s ease;
-    }
-    
-    h1 {
-      color: #333;
-      margin-bottom: 10px;
-    }
-    
-    .ai-response {
-      background: #f8f9fa;
-      border-left: 4px solid #007bff;
-      padding: 15px;
+    .controls {
+      display: flex;
+      gap: 10px;
       margin: 15px 0;
+      flex-wrap: wrap;
+    }
+    button {
+      padding: 10px 20px;
+      border: none;
       border-radius: 5px;
-      min-height: 20px;
-      font-style: italic;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.3s;
+    }
+    .btn-start { background: #28a745; color: white; }
+    .btn-stop { background: #dc3545; color: white; }
+    .btn-talk { background: #007bff; color: white; }
+    .btn-repeat { background: #6f42c1; color: white; }
+    button:hover { opacity: 0.9; }
+    button:disabled {
+      background: #6c757d;
+      cursor: not-allowed;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      margin: 5px 0;
+    }
+    .log {
+      height: 200px;
+      overflow-y: auto;
+      background: #1a1a1a;
+      color: #00ff00;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      font-size: 12px;
     }
   </style>
 </head>
 <body>
-  <h1>🤖 AI Meeting Assistant</h1>
+  <h1>🤖 HeyGen Avatar for Google Meet</h1>
   
-  <div class="status-container">
-    <div id="connectionStatus" class="status-item status-connecting">
-      🔄 Connecting to server...
+  <div class="container">
+    <div class="video-container panel">
+      <div id="status" class="status status-connecting">
+        🔄 Click "Start Avatar" to begin
+      </div>
+      <video id="avatarVideo" autoplay playsinline muted></video>
+      <div class="controls">
+        <button id="startBtn" class="btn-start" onclick="startAvatar()">Start Avatar</button>
+        <button id="stopBtn" class="btn-stop" onclick="stopAvatar()" disabled>Stop Avatar</button>
+        <input type="text" id="avatarIdInput" placeholder="Avatar ID (optional)" value="Wayne_20240711">
+      </div>
     </div>
-    
-    <div id="audioStatus" class="status-item status-connecting">
-      🎤 Initializing audio...
+
+    <div class="panel">
+      <h3>🎤 Manual Test (Without Recall.ai)</h3>
+      <textarea id="textInput" placeholder="Enter text for avatar to speak..." rows="3"></textarea>
+      <div class="controls">
+        <button id="talkBtn" class="btn-talk" onclick="sendText('talk')" disabled>Talk (LLM)</button>
+        <button id="repeatBtn" class="btn-repeat" onclick="sendText('repeat')" disabled>Repeat (Exact)</button>
+      </div>
+      
+      <h3>🔗 Recall.ai Integration</h3>
+      <p>Webhook URL for Recall.ai:</p>
+      <code id="webhookUrl"></code>
+      <p><small>Configure this URL in your Recall.ai dashboard to receive meeting transcriptions</small></p>
     </div>
-    
-    <div class="audio-visualizer">
-      <div id="audioLevel" class="audio-level"></div>
-    </div>
-    
-    <div id="aiStatus" class="status-item status-connecting">
-      ⏳ Waiting for AI connection...
-    </div>
-    
-    <div id="aiResponse" class="ai-response">
-      AI responses will appear here...
+
+    <div class="panel" style="grid-column: 1 / -1;">
+      <h3>📋 Connection Log</h3>
+      <div id="log" class="log"></div>
     </div>
   </div>
 
-<script>
-const connectionStatus = document.getElementById("connectionStatus");
-const audioStatus = document.getElementById("audioStatus");
-const aiStatus = document.getElementById("aiStatus");
-const aiResponse = document.getElementById("aiResponse");
-const audioLevel = document.getElementById("audioLevel");
+  <script>
+    // Global variables
+    let ws;
+    let room;
+    let mediaStream;
+    let currentSessionId;
 
-let audioContext;
-let isAudioProcessing = false;
-let currentAudioSource = null; // Track current audio playback
-let isPlayingAudio = false; // Track if audio is currently playing
+    // DOM elements
+    const statusDiv = document.getElementById("status");
+    const avatarVideo = document.getElementById("avatarVideo");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const talkBtn = document.getElementById("talkBtn");
+    const repeatBtn = document.getElementById("repeatBtn");
+    const textInput = document.getElementById("textInput");
+    const logDiv = document.getElementById("log");
+    const webhookUrl = document.getElementById("webhookUrl");
 
-// Update audio level visualizer
-function updateAudioLevel(level) {
-  const width = Math.min(100, level * 500);
-  audioLevel.style.width = width + '%';
-}
+    // Update webhook URL display
+    webhookUrl.textContent = `${window.location.origin}/webhook/recall-transcription`;
 
-// Connect to your server
-const ws = new WebSocket("wss://avatar-server-yp11.onrender.com/");
-
-ws.onopen = () => {
-  connectionStatus.textContent = "✅ Connected to server";
-  connectionStatus.className = "status-item status-connected";
-  
-  console.log("✅ Connected to server - waiting for OpenAI session");
-  initializeAudio();
-};
-
-ws.onclose = () => {
-  connectionStatus.textContent = "❌ Disconnected from server";
-  connectionStatus.className = "status-item status-error";
-};
-
-ws.onerror = (err) => {
-  connectionStatus.textContent = "❌ Connection error";
-  connectionStatus.className = "status-item status-error";
-};
-
-// Handle responses from OpenAI
-ws.onmessage = (event) => {
-  try {
-    const msg = JSON.parse(event.data);
-    
-    if (msg.type === "session.updated") {
-      aiStatus.textContent = "✅ AI Ready - Listening...";
-      aiStatus.className = "status-item status-listening";
-      console.log("✅ OpenAI session ready");
+    // Log function
+    function log(message) {
+      const timestamp = new Date().toLocaleTimeString();
+      logDiv.innerHTML += `[${timestamp}] ${message}\n`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+      console.log(message);
     }
-    else if (msg.type === "response.output_audio.delta" || 
-             msg.type === "response.output_audio_transcript.delta") {
-      // Stop any current audio playback when new response starts
-      if (isPlayingAudio && currentAudioSource) {
-        console.log("🛑 Stopping current audio for new response");
-        currentAudioSource.stop();
-        currentAudioSource = null;
-        isPlayingAudio = false;
-      }
-    }
-    else if (msg.type === "response.complete") {
-      // Play complete response when OpenAI finishes
-      aiStatus.textContent = "🔊 AI Speaking...";
-      aiStatus.className = "status-item status-speaking";
-      aiResponse.textContent = "AI: " + msg.transcript;
-      console.log(`🎯 Playing complete response: ${msg.audioBuffers.length} audio chunks`);
-      playCompleteAudio(msg.audioBuffers);
-    }
-    else if (msg.type === "input_audio_buffer.speech_started") {
-      console.log("🎤 Speech detected by OpenAI VAD");
+
+    // Connect to our WebSocket server
+    function connectWebSocket() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}`;
       
-      // Stop any current AI speech when user starts speaking
-      if (isPlayingAudio && currentAudioSource) {
-        console.log("🛑 User interruption - stopping AI speech");
-        currentAudioSource.stop();
-        currentAudioSource = null;
-        isPlayingAudio = false;
-        aiStatus.textContent = "👂 Listening to user...";
-        aiStatus.className = "status-item status-listening";
-      }
-    }
-    else if (msg.type === "input_audio_buffer.speech_stopped") {
-      console.log("🎤 Speech stopped - OpenAI will auto-process");
-    }
-    else if (msg.type === "input_audio_buffer.committed") {
-      console.log("✅ OpenAI auto-committed audio");
-    }
-    else if (msg.type === "error") {
-      aiStatus.textContent = "❌ AI Error";
-      aiStatus.className = "status-item status-error";
-      console.error("OpenAI error:", msg.error);
-    }
-    
-  } catch (error) {
-    console.error("Error parsing message:", error);
-  }
-};
+      ws = new WebSocket(wsUrl);
 
-// Play complete audio response
-async function playCompleteAudio(audioBuffers) {
-  // Stop any currently playing audio immediately
-  if (currentAudioSource) {
-    try {
-      currentAudioSource.stop();
-      currentAudioSource = null;
-    } catch (error) {
-      console.log("Stopped previous audio");
-    }
-  }
-  
-  if (!audioContext) {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  
-  try {
-    // Combine all audio buffers into one
-    const combinedAudioData = await combineAudioBuffers(audioBuffers);
-    
-    if (combinedAudioData.length === 0) {
-      throw new Error("Empty audio data");
-    }
-    
-    // Create and play the combined audio buffer
-    const audioBuffer = audioContext.createBuffer(1, combinedAudioData.length, 24000);
-    audioBuffer.getChannelData(0).set(combinedAudioData);
-    
-    const source = audioContext.createBufferSource();
-    currentAudioSource = source; // Track current source
-    isPlayingAudio = true;
-    
-    source.buffer = audioBuffer;
-    source.connect(audioContext.destination);
-    source.onended = () => {
-      isPlayingAudio = false;
-      currentAudioSource = null;
-      aiStatus.textContent = "✅ AI Ready - Listening...";
-      aiStatus.className = "status-item status-listening";
-      console.log("✅ Finished playing complete response");
-    };
-    source.start();
-    
-  } catch (error) {
-    console.error("Error playing complete audio:", error);
-    isPlayingAudio = false;
-    currentAudioSource = null;
-    aiStatus.textContent = "✅ AI Ready - Listening...";
-    aiStatus.className = "status-item status-listening";
-  }
-}
+      ws.onopen = () => {
+        log("✅ Connected to avatar server");
+        statusDiv.textContent = "✅ Connected - Ready to start avatar";
+        statusDiv.className = "status status-connected";
+        startBtn.disabled = false;
+      };
 
-// Combine multiple audio buffers into one
-function combineAudioBuffers(audioBuffers) {
-  return new Promise((resolve) => {
-    try {
-      // Calculate total length
-      let totalLength = 0;
-      const allChunks = [];
-      
-      for (const base64Audio of audioBuffers) {
-        const audioData = Uint8Array.from(atob(base64Audio), c => c.charCodeAt(0));
-        const chunkLength = audioData.length / 2; // 2 bytes per sample (16-bit)
-        totalLength += chunkLength;
-        allChunks.push(audioData);
-      }
-      
-      // Create combined Float32Array
-      const combined = new Float32Array(totalLength);
-      let offset = 0;
-      
-      for (const audioData of allChunks) {
-        const dataView = new DataView(audioData.buffer);
-        const chunkLength = audioData.length / 2;
-        
-        for (let i = 0; i < chunkLength; i++) {
-          const int16 = dataView.getInt16(i * 2, true);
-          combined[offset + i] = int16 / 32768.0;
+      ws.onmessage = async (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          log(`📨 Received: ${message.type}`);
+          
+          switch (message.type) {
+            case "heygen_session_created":
+              await connectToLiveKit(message.livekitUrl, message.livekitToken);
+              currentSessionId = message.sessionId;
+              break;
+              
+            case "heygen_session_stopped":
+              resetUI();
+              log("✅ Avatar session stopped");
+              break;
+              
+            case "text_sent_to_avatar":
+              log(`✅ Sent to avatar: "${message.text}" (${message.taskType})`);
+              break;
+              
+            case "error":
+              log(`❌ Error: ${message.message}`);
+              statusDiv.textContent = `❌ Error: ${message.message}`;
+              statusDiv.className = "status status-error";
+              resetUI();
+              break;
+          }
+          
+        } catch (error) {
+          log(`❌ Error parsing message: ${error}`);
         }
-        offset += chunkLength;
+      };
+
+      ws.onclose = () => {
+        log("🔴 Disconnected from server");
+        statusDiv.textContent = "🔴 Disconnected from server";
+        statusDiv.className = "status status-error";
+        resetUI();
+      };
+
+      ws.onerror = (error) => {
+        log(`❌ WebSocket error: ${error}`);
+        statusDiv.textContent = "❌ Connection error";
+        statusDiv.className = "status status-error";
+      };
+    }
+
+    // Start the avatar
+    async function startAvatar() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert("Not connected to server");
+        return;
+      }
+
+      const avatarId = document.getElementById("avatarIdInput").value.trim() || "Wayne_20240711";
+      
+      statusDiv.textContent = "🔄 Starting HeyGen avatar...";
+      startBtn.disabled = true;
+      
+      log(`🚀 Starting avatar: ${avatarId}`);
+      
+      ws.send(JSON.stringify({
+        type: "start_avatar",
+        avatarId: avatarId
+      }));
+    }
+
+    // Connect to LiveKit room
+    async function connectToLiveKit(livekitUrl, livekitToken) {
+      try {
+        log("🔗 Connecting to LiveKit...");
+        
+        // Create LiveKit room
+        room = new LivekitClient.Room({
+          adaptiveStream: true,
+          dynacast: true
+        });
+
+        // Create media stream for video
+        mediaStream = new MediaStream();
+
+        // Handle incoming tracks
+        room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, publication, participant) => {
+          log(`🎥 Track subscribed: ${track.kind} from ${participant.identity}`);
+          
+          if (track.kind === "video" || track.kind === "audio") {
+            mediaStream.addTrack(track.mediaStreamTrack);
+            
+            // When we have both video and audio, set up the video element
+            if (mediaStream.getVideoTracks().length > 0) {
+              avatarVideo.srcObject = mediaStream;
+              log("✅ Avatar video stream connected");
+              
+              statusDiv.textContent = "✅ Avatar Live - Speak in your meeting!";
+              stopBtn.disabled = false;
+              talkBtn.disabled = false;
+              repeatBtn.disabled = false;
+            }
+          }
+        });
+
+        // Handle disconnections
+        room.on(LivekitClient.RoomEvent.Disconnected, () => {
+          log("🔴 Disconnected from LiveKit");
+          resetUI();
+        });
+
+        // Connect to the room
+        await room.connect(livekitUrl, livekitToken);
+        log("✅ Connected to LiveKit room");
+
+      } catch (error) {
+        log(`❌ LiveKit connection failed: ${error}`);
+        statusDiv.textContent = "❌ Failed to connect to avatar video";
+        statusDiv.className = "status status-error";
+        resetUI();
+      }
+    }
+
+    // Stop the avatar
+    function stopAvatar() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        log("🛑 Stopping avatar...");
+        ws.send(JSON.stringify({ type: "stop_avatar" }));
       }
       
-      resolve(combined);
+      if (room) {
+        room.disconnect();
+        room = null;
+      }
       
-    } catch (error) {
-      console.error("Error combining audio buffers:", error);
-      resolve(new Float32Array(0));
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+        mediaStream = null;
+      }
+      
+      if (avatarVideo.srcObject) {
+        avatarVideo.srcObject = null;
+      }
+      
+      resetUI();
     }
-  });
-}
 
-// Audio conversion function
-function float32ToPCM16(float32Array) {
-  const pcm16 = new Int16Array(float32Array.length);
-  for (let i = 0; i < float32Array.length; i++) {
-    const s = Math.max(-1, Math.min(1, float32Array[i]));
-    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-  }
-  // Convert to base64
-  const uint8 = new Uint8Array(pcm16.buffer);
-  let binary = '';
-  for (let i = 0; i < uint8.length; i++) {
-    binary += String.fromCharCode(uint8[i]);
-  }
-  return btoa(binary);
-}
+    // Send text to avatar
+    function sendText(taskType) {
+      const text = textInput.value.trim();
+      if (!text) {
+        alert("Please enter some text");
+        return;
+      }
 
-// Initialize audio processing
-async function initializeAudio() {
-  try {
-    audioStatus.textContent = "🎤 Accessing microphone...";
-    audioStatus.className = "status-item status-connecting";
-    
-    // Get meeting audio stream (automatically provided by Recall.ai)
-    const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-      audio: {
-        sampleRate: 24000,
-        channelCount: 1,
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert("Not connected to server");
+        return;
+      }
+
+      log(`📤 Sending text (${taskType}): ${text}`);
+      
+      ws.send(JSON.stringify({
+        type: "user_speech",
+        text: text,
+        taskType: taskType
+      }));
+      
+      textInput.value = "";
+    }
+
+    // Reset UI state
+    function resetUI() {
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      talkBtn.disabled = true;
+      repeatBtn.disabled = true;
+      statusDiv.textContent = "🔄 Ready to start avatar";
+      statusDiv.className = "status status-connecting";
+    }
+
+    // Initialize when page loads
+    window.addEventListener('load', () => {
+      log("🔌 Initializing...");
+      connectWebSocket();
+    });
+
+    // Handle Enter key in text input
+    textInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        sendText('talk');
       }
     });
-    
-    audioStatus.textContent = "✅ Microphone active - Speak normally";
-    audioStatus.className = "status-item status-listening";
-    
-    // Initialize audio context
-    audioContext = new AudioContext({ sampleRate: 24000 });
-    const source = audioContext.createMediaStreamSource(mediaStream);
-    
-    // Use ScriptProcessor for audio processing
-    const processor = audioContext.createScriptProcessor(1024, 1, 1);
-    
-    processor.onaudioprocess = (event) => {
-      if (isAudioProcessing || ws.readyState !== WebSocket.OPEN) return;
-      isAudioProcessing = true;
-      
-      try {
-        const inputData = event.inputBuffer.getChannelData(0);
-        
-        // Calculate audio level for visualization
-        let sum = 0;
-        for (let i = 0; i < inputData.length; i++) {
-          sum += Math.abs(inputData[i]);
-        }
-        const average = sum / inputData.length;
-        updateAudioLevel(average);
-        
-        // Stop AI speech when user starts speaking (based on audio level)
-        if (average > 0.05 && isPlayingAudio && currentAudioSource) {
-          console.log("🛑 User audio detected - stopping AI speech");
-          currentAudioSource.stop();
-          currentAudioSource = null;
-          isPlayingAudio = false;
-          aiStatus.textContent = "👂 Listening to user...";
-          aiStatus.className = "status-item status-listening";
-        }
-        
-        // Send ALL audio to OpenAI - let OpenAI's VAD handle speech detection
-        const audioBase64 = float32ToPCM16(inputData);
-        ws.send(JSON.stringify({ 
-          type: "input_audio_buffer.append",
-          audio: audioBase64 
-        }));
-        
-      } catch (error) {
-        console.error("Audio processing error:", error);
-      }
-      
-      isAudioProcessing = false;
-    };
-
-    source.connect(processor);
-    processor.connect(audioContext.destination);
-    
-    console.log("✅ Audio streaming started - sending all audio to OpenAI VAD");
-
-  } catch (error) {
-    console.error("Error accessing meeting audio:", error);
-    audioStatus.textContent = "❌ Microphone access failed";
-    audioStatus.className = "status-item status-error";
-  }
-}
-
-// Reset audio level visualizer when no audio
-setInterval(() => {
-  updateAudioLevel(0);
-}, 100);
-</script>
+  </script>
 </body>
 </html>
