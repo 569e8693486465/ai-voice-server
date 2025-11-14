@@ -175,27 +175,69 @@
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
+
+    .feature-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 15px;
+      margin: 20px 0;
+    }
+
+    .feature-item {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      border-left: 4px solid #667eea;
+    }
+
+    .config-status {
+      background: #fff3cd;
+      padding: 15px;
+      border-radius: 8px;
+      margin: 15px 0;
+      border-left: 4px solid #ffc107;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
       <h1>🤖 Tavus AI for Google Meet</h1>
-      <p>Add AI avatars to your Google Meet meetings</p>
+      <p>Add AI avatars to your Google Meet meetings - No Name Prompt Required!</p>
     </div>
 
     <div class="card">
-      <h2>Deploy AI Avatar to Google Meet</h2>
+      <h2>🚀 Deploy AI Avatar to Google Meet</h2>
       
       <div class="info-box">
         <h3>🔗 How It Works</h3>
         <ol style="margin-left: 20px; margin-top: 10px;">
-          <li>Recall.ai bot joins your Google Meet</li>
+          <li>Recall.ai bot joins your Google Meet automatically</li>
           <li>Bot displays Tavus AI avatar to all participants</li>
+          <li><strong>NEW:</strong> No name prompt - joins automatically as "AI Assistant"</li>
           <li>When people speak, Recall.ai transcribes their speech</li>
           <li>Transcriptions are sent to Tavus avatar via Daily.co</li>
           <li>Tavus avatar responds in real-time in the meeting!</li>
         </ol>
+      </div>
+
+      <div class="feature-list">
+        <div class="feature-item">
+          <strong>✅ No Name Prompt</strong>
+          <p>Automatically joins as "AI Assistant"</p>
+        </div>
+        <div class="feature-item">
+          <strong>🔐 Token Authentication</strong>
+          <p>Uses Daily.co tokens for seamless joining</p>
+        </div>
+        <div class="feature-item">
+          <strong>🎙️ Real-time Transcription</strong>
+          <p>Instant voice-to-text processing</p>
+        </div>
+        <div class="feature-item">
+          <strong>🤖 AI Responses</strong>
+          <p>Tavus avatar responds naturally</p>
+        </div>
       </div>
 
       <input type="url" id="meetingUrl" placeholder="Paste your Google Meet URL here (https://meet.google.com/xxx-xxx-xxx)" />
@@ -206,6 +248,11 @@
       
       <div id="statusIndicator" class="status-indicator status-ready">
         ✅ Ready to deploy to Google Meet
+      </div>
+
+      <div class="config-status" id="dailyConfigStatus">
+        <strong>Daily.co Configuration:</strong> 
+        <span id="dailyStatusText">Checking...</span>
       </div>
 
       <div class="info-box">
@@ -232,6 +279,8 @@
     const statusIndicator = document.getElementById('statusIndicator');
     const logContainer = document.getElementById('logContainer');
     const webhookUrl = document.getElementById('webhookUrl');
+    const dailyConfigStatus = document.getElementById('dailyConfigStatus');
+    const dailyStatusText = document.getElementById('dailyStatusText');
 
     // Set webhook URL
     webhookUrl.textContent = `${window.location.origin}/webhook/recall-transcription`;
@@ -249,6 +298,28 @@
     function updateStatus(message, type = 'ready') {
       statusIndicator.textContent = message;
       statusIndicator.className = `status-indicator status-${type}`;
+    }
+
+    // Check Daily.co configuration
+    async function checkDailyConfig() {
+      try {
+        const response = await fetch('/health');
+        const data = await response.json();
+        
+        if (data.dailyConfigured) {
+          dailyStatusText.textContent = '✅ Token authentication enabled';
+          dailyConfigStatus.style.borderLeftColor = '#28a745';
+          dailyConfigStatus.style.background = '#d4edda';
+        } else {
+          dailyStatusText.textContent = '⚠️ Using fallback mode (name prompt may appear)';
+          dailyConfigStatus.style.borderLeftColor = '#ffc107';
+          dailyConfigStatus.style.background = '#fff3cd';
+        }
+      } catch (error) {
+        dailyStatusText.textContent = '❌ Unable to check configuration';
+        dailyConfigStatus.style.borderLeftColor = '#dc3545';
+        dailyConfigStatus.style.background = '#f8d7da';
+      }
     }
 
     async function deployToGoogleMeet() {
@@ -271,6 +342,7 @@
       updateStatus('🔄 Deploying AI avatar to Google Meet...', 'active');
       
       log(`Starting deployment to Google Meet: ${url}`);
+      log('Using automatic name bypass: "AI Assistant"');
 
       try {
         const response = await fetch('/deploy-to-google-meet', {
@@ -286,9 +358,13 @@
           log(`✅ Bot deployed: ${data.botId}`);
           log(`🔗 Tavus Conversation: ${data.conversationId}`);
           log(`🌐 Google Meet: ${data.meetingUrl}`);
+          log(`🔐 Authentication: ${data.tokenAuth ? 'Token (No Name Prompt)' : 'Fallback (May Show Prompt)'}`);
           log('💡 The AI avatar is now joining your Google Meet');
           log('🎤 Speak in the meeting to interact with the AI avatar');
           
+          if (!data.tokenAuth) {
+            log('⚠️ Note: Daily.co API key not configured - name prompt may appear');
+          }
         } else {
           throw new Error(data.error);
         }
@@ -305,12 +381,16 @@
     // Initialize
     log('Google Meet integration system initialized');
     log('Enter a Google Meet URL and click deploy');
+    checkDailyConfig();
 
     meetingUrl.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') {
         deployToGoogleMeet();
       }
     });
+
+    // Update health check to include Daily.co config
+    setInterval(checkDailyConfig, 30000);
   </script>
 </body>
 </html>
