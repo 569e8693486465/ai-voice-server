@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Tavus AI Meeting Avatar</title>
+  <title>Tavus + Recall.ai Integration</title>
   <style>
     * {
       box-sizing: border-box;
@@ -21,7 +21,7 @@
     }
     
     .container {
-      max-width: 1200px;
+      max-width: 1000px;
       margin: 0 auto;
     }
     
@@ -68,7 +68,7 @@
       flex-direction: column;
     }
     
-    .meeting-panel {
+    .info-panel {
       display: flex;
       flex-direction: column;
     }
@@ -113,26 +113,12 @@
       transform: none !important;
     }
     
-    .meeting-frame {
-      width: 100%;
-      height: 400px;
-      border: none;
-      border-radius: 10px;
-      background: #1a1a1a;
-    }
-    
     .status-indicator {
       padding: 15px;
       border-radius: 8px;
       margin: 15px 0;
       font-weight: 600;
       text-align: center;
-    }
-    
-    .status-connecting {
-      background: #fff3cd;
-      color: #856404;
-      border: 1px solid #ffeaa7;
     }
     
     .status-ready {
@@ -228,92 +214,112 @@
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
+    
+    input[type="url"] {
+      width: 100%;
+      padding: 15px;
+      border: 2px solid #e9ecef;
+      border-radius: 8px;
+      font-size: 16px;
+      margin: 10px 0;
+      transition: border-color 0.3s ease;
+    }
+    
+    input[type="url"]:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    
+    .test-controls {
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 8px;
+      margin: 15px 0;
+      border: 1px solid #dee2e6;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
-      <h1>🤖 Tavus AI Meeting Avatar</h1>
-      <p>Create AI-powered meetings with your digital replica</p>
+      <h1>🤖 Tavus + Recall.ai Integration</h1>
+      <p>Deploy AI avatars to Google Meet with real-time conversation</p>
     </div>
 
     <div class="main-content">
       <!-- Control Panel -->
       <div class="card control-panel">
-        <h2>Meeting Controls</h2>
+        <h2>Deployment Controls</h2>
         
         <div class="step">
-          <h3><span class="step-number">1</span> Create Meeting Room</h3>
-          <p>Create a new meeting room where your AI avatar will join</p>
-          <button id="createMeetingBtn" class="btn btn-primary" onclick="createMeeting()">
-            <span>🚀 Create AI Meeting</span>
+          <h3><span class="step-number">1</span> Enter Google Meet URL</h3>
+          <input type="url" id="meetingUrl" placeholder="https://meet.google.com/abc-defg-hij" />
+        </div>
+
+        <div class="step">
+          <h3><span class="step-number">2</span> Deploy AI Avatar</h3>
+          <p>Deploy the Recall.ai bot with Tavus avatar to your meeting</p>
+          <button id="deployBtn" class="btn btn-primary" onclick="deployBot()">
+            <span>🚀 Deploy AI Avatar to Meeting</span>
           </button>
         </div>
 
         <div class="step">
-          <h3><span class="step-number">2</span> Join Meeting</h3>
-          <p>Join the meeting from Google Meet or any video conferencing app</p>
-          <div id="meetingLinkContainer" style="display: none;">
-            <div class="url-display">
-              <strong>Meeting URL:</strong><br>
-              <a id="meetingUrl" target="_blank" style="color: #007bff;"></a>
-            </div>
-            <button class="btn btn-secondary" onclick="copyMeetingUrl()">
-              📋 Copy Meeting URL
-            </button>
+          <h3><span class="step-number">3</span> Deployment Status</h3>
+          <div id="statusIndicator" class="status-indicator status-ready">
+            ✅ Ready to deploy
           </div>
         </div>
 
-        <div class="step">
-          <h3><span class="step-number">3</span> Meeting Status</h3>
-          <div id="statusIndicator" class="status-indicator status-connecting">
-            🔄 Ready to create meeting
-          </div>
-        </div>
-
-        <div class="info-box">
-          <h3>💡 How to Use</h3>
-          <ol style="margin-left: 20px; margin-top: 10px;">
-            <li>Click "Create AI Meeting" to generate a meeting room</li>
-            <li>Copy the meeting URL and join from Google Meet</li>
-            <li>Your AI avatar will automatically join the meeting</li>
-            <li>Speak to interact with the AI assistant</li>
-          </ol>
+        <div class="test-controls">
+          <h3>🧪 Test Integration</h3>
+          <p>Send a test message to the deployed avatar:</p>
+          <input type="text" id="testMessage" placeholder="Enter test message..." />
+          <button class="btn btn-secondary" onclick="sendTestMessage()">
+            📨 Send Test Message
+          </button>
         </div>
       </div>
 
-      <!-- Meeting Panel -->
-      <div class="card meeting-panel">
-        <h2>Meeting Preview</h2>
-        <p>Your AI avatar will appear here once the meeting is created</p>
+      <!-- Information Panel -->
+      <div class="card info-panel">
+        <h2>How It Works</h2>
         
-        <div id="meetingContainer">
-          <iframe id="meetingFrame" class="meeting-frame" 
-                  allow="camera; microphone; display-capture"
-                  style="display: none;">
-          </iframe>
-          <div id="placeholder" style="text-align: center; padding: 50px 20px; color: #666;">
-            <div style="font-size: 48px; margin-bottom: 20px;">🤖</div>
-            <h3>No Active Meeting</h3>
-            <p>Create a meeting to see your AI avatar in action</p>
+        <div class="info-box">
+          <h3>🔗 Complete Integration Flow</h3>
+          <ol style="margin-left: 20px; margin-top: 10px;">
+            <li><strong>Deploy Bot:</strong> Recall.ai bot joins your Google Meet</li>
+            <li><strong>Display Avatar:</strong> Bot shows Tavus AI avatar to participants</li>
+            <li><strong>Real-time Transcription:</strong> Recall.ai transcribes meeting speech</li>
+            <li><strong>AI Response:</strong> Text sent to Tavus via Daily.co sendAppMessage()</li>
+            <li><strong>Avatar Speaks:</strong> Tavus avatar responds in real-time</li>
+          </ol>
+        </div>
+
+        <div class="info-box">
+          <h3>🎯 Current Configuration</h3>
+          <div class="url-display">
+            <strong>Replica ID:</strong> r92debe21318<br>
+            <strong>Integration Method:</strong> Daily.co sendAppMessage()<br>
+            <strong>Event Type:</strong> conversation.respond
           </div>
         </div>
 
         <div class="info-box">
-          <h3>🔗 Recall.ai Integration</h3>
-          <p>Webhook URL for Recall.ai transcriptions:</p>
+          <h3>📋 Webhook URLs</h3>
+          <p><strong>Recall.ai Webhook:</strong></p>
           <div class="url-display" id="webhookUrl"></div>
-          <p><small>Configure this URL in your Recall.ai dashboard to receive meeting transcriptions</small></p>
+          <p><small>Configure this in your Recall.ai dashboard for automatic transcriptions</small></p>
         </div>
       </div>
     </div>
 
     <!-- Log Panel -->
     <div class="card">
-      <h2>System Log</h2>
+      <h2>Deployment Log</h2>
       <div id="logContainer" class="log-container">
         <div class="log-entry">
-          <span class="log-timestamp">[00:00:00]</span> System initialized
+          <span class="log-timestamp">[00:00:00]</span> System initialized and ready
         </div>
       </div>
     </div>
@@ -321,17 +327,15 @@
 
   <script>
     // DOM elements
-    const createMeetingBtn = document.getElementById('createMeetingBtn');
-    const meetingLinkContainer = document.getElementById('meetingLinkContainer');
     const meetingUrl = document.getElementById('meetingUrl');
-    const meetingFrame = document.getElementById('meetingFrame');
-    const placeholder = document.getElementById('placeholder');
+    const deployBtn = document.getElementById('deployBtn');
     const statusIndicator = document.getElementById('statusIndicator');
     const logContainer = document.getElementById('logContainer');
     const webhookUrl = document.getElementById('webhookUrl');
+    const testMessage = document.getElementById('testMessage');
 
     // Set webhook URL
-    webhookUrl.textContent = `${window.location.origin}/webhook/recall`;
+    webhookUrl.textContent = `${window.location.origin}/webhook/recall-transcription`;
 
     // Log function
     function log(message) {
@@ -350,89 +354,135 @@
       statusIndicator.className = `status-indicator status-${type}`;
     }
 
-    // Create meeting function
-    async function createMeeting() {
-      const btnText = createMeetingBtn.querySelector('span');
+    // Deploy bot function
+    async function deployBot() {
+      const url = meetingUrl.value.trim();
+      
+      if (!url) {
+        alert('Please enter a Google Meet URL');
+        return;
+      }
+
+      if (!url.includes('meet.google.com')) {
+        alert('Please enter a valid Google Meet URL (meet.google.com/...)');
+        return;
+      }
+
+      const btnText = deployBtn.querySelector('span');
       
       // Show loading state
-      btnText.innerHTML = '<div class="loading"></div> Creating meeting...';
-      createMeetingBtn.disabled = true;
-      updateStatus('🔄 Creating meeting room...', 'connecting');
+      btnText.innerHTML = '<div class="loading"></div> Deploying...';
+      deployBtn.disabled = true;
+      updateStatus('🔄 Deploying AI avatar to meeting...', 'active');
       
-      log('Creating Tavus meeting...');
+      log(`Starting deployment to: ${url}`);
 
       try {
-        const response = await fetch('/create-meeting', {
+        const response = await fetch('/deploy-bot', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-          }
+          },
+          body: JSON.stringify({
+            meeting_url: url
+          })
         });
 
         const data = await response.json();
 
         if (data.success) {
-          log(`✅ Meeting created successfully: ${data.conversationId}`);
-          updateStatus('✅ Meeting created successfully!', 'active');
+          updateStatus('✅ AI avatar deployed successfully!', 'active');
           
-          // Show meeting URL
-          meetingUrl.href = data.meetingUrl;
-          meetingUrl.textContent = data.meetingUrl;
-          meetingLinkContainer.style.display = 'block';
+          log(`✅ Bot deployed successfully: ${data.botId}`);
+          log(`🔗 Tavus Conversation ID: ${data.conversationId}`);
+          log(`🌐 Meeting: ${data.meetingUrl}`);
+          log('💡 The AI avatar will now respond to meeting conversations');
+          log('📝 Configure Recall.ai webhook for automatic transcriptions');
           
-          // Load meeting in iframe
-          meetingFrame.src = data.meetingUrl;
-          meetingFrame.style.display = 'block';
-          placeholder.style.display = 'none';
-          
-          log(`🔗 Meeting URL: ${data.meetingUrl}`);
-          log('💡 Copy the meeting URL and join from Google Meet');
+          // Store conversation ID for testing
+          window.currentConversationId = data.conversationId;
           
         } else {
-          throw new Error(data.error || 'Failed to create meeting');
+          throw new Error(data.error);
         }
 
       } catch (error) {
-        log(`❌ Error creating meeting: ${error.message}`);
+        log(`❌ Deployment failed: ${error.message}`);
         updateStatus(`❌ Error: ${error.message}`, 'error');
         
-        // Show error details
-        if (error.message.includes('persona_id')) {
-          log('💡 Make sure you have created a persona with the correct pipeline_mode');
+        // Show specific guidance for common errors
+        if (error.message.includes('Tavus API')) {
+          log('💡 Check your TAVUS_API_KEY and PERSONA_ID in .env file');
+        } else if (error.message.includes('Recall.ai API')) {
+          log('💡 Check your RECALL_API_KEY in .env file');
         }
       } finally {
         // Reset button
-        btnText.textContent = '🚀 Create AI Meeting';
-        createMeetingBtn.disabled = false;
+        btnText.textContent = '🚀 Deploy AI Avatar to Meeting';
+        deployBtn.disabled = false;
       }
     }
 
-    // Copy meeting URL to clipboard
-    async function copyMeetingUrl() {
+    // Send test message function
+    async function sendTestMessage() {
+      const message = testMessage.value.trim();
+      
+      if (!message) {
+        alert('Please enter a test message');
+        return;
+      }
+
+      if (!window.currentConversationId) {
+        alert('Please deploy a bot first');
+        return;
+      }
+
+      log(`📨 Sending test message: "${message}"`);
+
       try {
-        await navigator.clipboard.writeText(meetingUrl.href);
-        log('📋 Meeting URL copied to clipboard');
-        
-        // Show temporary confirmation
-        const originalText = meetingUrl.textContent;
-        meetingUrl.textContent = '✅ Copied!';
-        setTimeout(() => {
-          meetingUrl.textContent = originalText;
-        }, 2000);
-      } catch (err) {
-        log('❌ Failed to copy meeting URL');
+        // In a real implementation, you'd send this via WebSocket to the bot interface
+        // For now, we'll simulate the process
+        const response = await fetch('/send-test-message', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            conversationId: window.currentConversationId,
+            text: message
+          })
+        });
+
+        if (response.ok) {
+          log(`✅ Test message sent to conversation: ${window.currentConversationId}`);
+          testMessage.value = '';
+        } else {
+          throw new Error('Failed to send test message');
+        }
+
+      } catch (error) {
+        log(`❌ Failed to send test message: ${error.message}`);
       }
     }
 
     // Initialize
     log('System initialized');
+    log('Ready to deploy AI avatars to Google Meet');
     log(`Replica ID: r92debe21318`);
-    log('Ready to create AI meeting sessions');
+    log(`Using Daily.co sendAppMessage() for real-time interaction`);
 
-    // Add click handler for meeting URL for easy access
-    meetingUrl.addEventListener('click', (e) => {
-      e.preventDefault();
-      window.open(meetingUrl.href, '_blank');
+    // Handle Enter key in meeting URL input
+    meetingUrl.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        deployBot();
+      }
+    });
+
+    // Handle Enter key in test message input
+    testMessage.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        sendTestMessage();
+      }
     });
   </script>
 </body>
