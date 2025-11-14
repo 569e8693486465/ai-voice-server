@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 
 // Load your credentials from .env file
 const TAVUS_API_KEY = process.env.TAVUS_API_KEY;
-const REPLICA_ID = process.env.REPLICA_ID || "r92debe21318";
+const REPLICA_ID = process.env.REPLICA_ID || "r6ae5b6efc9d";
 const PERSONA_ID = process.env.PERSONA_ID;
 
 // Validate required environment variables
