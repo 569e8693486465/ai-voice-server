@@ -25,6 +25,7 @@
     const urlParams = new URLSearchParams(window.location.search);
     const conversationUrl = urlParams.get('conversationUrl');
     const conversationId = urlParams.get('conversationId');
+    const autoJoin = urlParams.get('autoJoin') === 'true';
     
     const status = document.getElementById('status');
     const dailyFrame = document.getElementById('dailyFrame');
@@ -57,7 +58,11 @@
           },
           showLeaveButton: false,
           showFullscreenButton: false,
-          showParticipantsBar: false
+          showParticipantsBar: false,
+          // NEW: Additional settings to bypass UI prompts
+          showLocalVideo: false,
+          showUserName: false,
+          prejoinStyle: 'none' // This helps minimize pre-join UI
         });
 
         // Set up event listeners
@@ -91,17 +96,32 @@
           log(`Daily.co error: ${error}`);
         });
 
-        // Join the call with bot-optimized settings
+        callFrame.on('participant-joined', (event) => {
+          if (event.participant.local) {
+            log('✅ Local participant (AI Avatar) joined successfully');
+          }
+        });
+
+        callFrame.on('participant-left', (event) => {
+          log(`Participant left: ${event.participant.user_name}`);
+        });
+
+        // NEW: Join with automatic settings to bypass prompts
         await callFrame.join({
           video: false,
           audio: false,
           startWithAudioMuted: true,
-          startWithVideoMuted: true
+          startWithVideoMuted: true,
+          userName: "AI Assistant", // NEW: Set name programmatically
+          enablePrejoinUI: false // NEW: Try to disable pre-join UI
         });
         
       } catch (error) {
         status.textContent = '❌ Failed to initialize Daily.co';
         log(`Initialization error: ${error.message}`);
+        
+        // Retry after 2 seconds
+        setTimeout(initializeDailyCall, 2000);
       }
     }
 
@@ -133,7 +153,10 @@
     // WebSocket connection to receive transcriptions from Google Meet
     function connectWebSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}/transcriptions?conversationId=${conversationId}`);
+      const wsUrl = `${protocol}//${window.location.host}/transcriptions?conversationId=${conversationId}`;
+      
+      log(`Connecting to WebSocket: ${wsUrl}`);
+      const ws = new WebSocket(wsUrl);
       
       ws.onopen = () => {
         log('✅ Connected to transcription server - Ready for Google Meet audio');
@@ -165,6 +188,9 @@
     window.addEventListener('load', () => {
       log('Google Meet interface initialized');
       log(`Conversation ID: ${conversationId}`);
+      log(`Auto Join: ${autoJoin}`);
+      log(`Conversation URL: ${conversationUrl}`);
+      
       initializeDailyCall();
       setTimeout(connectWebSocket, 2000);
     });
