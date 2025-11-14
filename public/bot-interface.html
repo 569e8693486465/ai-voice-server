@@ -66,6 +66,10 @@
           log('Daily.co frame loaded');
         });
 
+        dailyCall.on('joining-meeting', () => {
+          log('🔄 Joining Tavus conversation...');
+        });
+
         dailyCall.on('joined-meeting', (event) => {
           status.textContent = '✅ Joined Tavus Conversation';
           log('Successfully joined Tavus conversation');
@@ -81,8 +85,21 @@
           log(`Error: ${error}`);
         });
 
-        // Join the call
-        await dailyCall.join();
+        dailyCall.on('load-attempt-failed', (e) => {
+          log(`❌ Daily.co load failed: ${e.errorMsg}`);
+        });
+
+        dailyCall.on('nonfatal-error', (e) => {
+          log(`⚠️ Daily.co nonfatal error: ${e.errorMsg}`);
+        });
+
+        // Join the call with bot-optimized settings
+        await dailyCall.join({
+          video: false,
+          audio: false,
+          startWithAudioMuted: true,
+          startWithVideoMuted: true
+        });
         
       } catch (error) {
         status.textContent = '❌ Failed to initialize Daily.co';
@@ -134,7 +151,7 @@
     // WebSocket connection to receive transcriptions from server
     function connectWebSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}/transcriptions`);
+      const ws = new WebSocket(`${protocol}//${window.location.host}/transcriptions?conversationId=${conversationId}`);
       
       ws.onopen = () => {
         log('✅ Connected to transcription server');
@@ -154,14 +171,23 @@
 
       ws.onclose = () => {
         log('🔴 Disconnected from transcription server');
+        // Attempt to reconnect after 5 seconds
+        setTimeout(connectWebSocket, 5000);
+      };
+
+      ws.onerror = (error) => {
+        log(`❌ WebSocket error: ${error}`);
       };
     }
 
     // Initialize everything when page loads
     window.addEventListener('load', () => {
       log('Bot interface initialized');
+      log(`Conversation ID: ${conversationId}`);
       initializeDailyCall();
-      connectWebSocket();
+      
+      // Wait a bit before connecting WebSocket to ensure Daily.co is loaded
+      setTimeout(connectWebSocket, 2000);
     });
 
     // For testing: simulate receiving a transcription
