@@ -1,5 +1,5 @@
 {
-  "name": "heygen-google-meet-avatar",
+  "name": "tavus-meeting-avatar",
   "type": "module",
   "dependencies": {
     "express": "^4.18.2",
