@@ -37,7 +37,7 @@
       console.log(message);
     }
 
-    // Initialize Daily.co call frame
+    // Initialize Daily.co call frame with camera/mic workaround
     async function initializeDailyCall() {
       if (!conversationUrl) {
         status.textContent = '❌ Missing conversation URL';
@@ -47,7 +47,7 @@
       try {
         log('Initializing Daily.co for Google Meet integration...');
         
-        // Create Daily call frame
+        // Create Daily call frame with optimized settings to avoid camera/mic prompts
         callFrame = window.DailyIframe.createFrame(dailyFrame, {
           url: conversationUrl,
           iframeStyle: {
@@ -59,10 +59,15 @@
           showLeaveButton: false,
           showFullscreenButton: false,
           showParticipantsBar: false,
-          // NEW: Additional settings to bypass UI prompts
+          // CRITICAL: Disable all UI elements that might trigger permissions
           showLocalVideo: false,
           showUserName: false,
-          prejoinStyle: 'none' // This helps minimize pre-join UI
+          enableNetworkUI: false,
+          enableHandRaising: false,
+          enableEmojiReactions: false,
+          enableNoiseCancellationUI: false,
+          enablePeopleUI: false,
+          prejoinStyle: 'none'
         });
 
         // Set up event listeners
@@ -106,14 +111,14 @@
           log(`Participant left: ${event.participant.user_name}`);
         });
 
-        // NEW: Join with automatic settings to bypass prompts
+        // Join with camera/mic completely disabled
         await callFrame.join({
           video: false,
           audio: false,
           startWithAudioMuted: true,
           startWithVideoMuted: true,
-          userName: "AI Assistant", // NEW: Set name programmatically
-          enablePrejoinUI: false // NEW: Try to disable pre-join UI
+          userName: "AI Assistant",
+          enablePrejoinUI: false // This is critical!
         });
         
       } catch (error) {
