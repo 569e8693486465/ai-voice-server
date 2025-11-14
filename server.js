@@ -1,4 +1,5 @@
 import express from "express";
+import { WebSocketServer } from "ws";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
 
@@ -7,22 +8,10 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Load your credentials from .env file
 const TAVUS_API_KEY = process.env.TAVUS_API_KEY;
+const RECALL_API_KEY = process.env.RECALL_API_KEY;
 const REPLICA_ID = process.env.REPLICA_ID || "r6ae5b6efc9d";
 const PERSONA_ID = process.env.PERSONA_ID;
-
-// Validate required environment variables
-if (!TAVUS_API_KEY) {
-  console.error("❌ Missing TAVUS_API_KEY in .env file");
-  process.exit(1);
-}
-
-if (!PERSONA_ID) {
-  console.error("❌ Missing PERSONA_ID in .env file");
-  console.log("💡 Create a persona first using the curl command provided in the instructions");
-  process.exit(1);
-}
 
 app.use(express.json());
 app.use(express.static("public"));
@@ -30,12 +19,23 @@ app.use(express.static("public"));
 // Store active conversations
 const activeConversations = new Map();
 
-// Endpoint to create a Tavus conversation
-app.post("/create-meeting", async (req, res) => {
+const server = app.listen(PORT, () => {
+  console.log(`🚀 Tavus + Recall.ai Integration Server running on port ${PORT}`);
+});
+
+// Endpoint to create Tavus conversation and deploy Recall.ai bot
+app.post("/deploy-bot", async (req, res) => {
   try {
-    console.log("🔄 Creating Tavus conversation...");
+    const { meeting_url } = req.body;
     
-    const response = await fetch("https://tavusapi.com/v2/conversations", {
+    if (!meeting_url) {
+      return res.status(400).json({ error: "Meeting URL is required" });
+    }
+
+    console.log("🔄 Creating Tavus conversation...");
+
+    // 1. Create Tavus conversation
+    const tavusResponse = await fetch("https://tavusapi.com/v2/conversations", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -45,124 +45,99 @@ app.post("/create-meeting", async (req, res) => {
         replica_id: REPLICA_ID,
         persona_id: PERSONA_ID,
         conversation_name: "AI Meeting Assistant",
-        conversational_context: "You are an AI assistant participating in a Google Meet meeting. Provide helpful, concise responses.",
+        conversational_context: "You are participating in a Google Meet. Provide helpful, concise responses.",
         audio_only: false,
-        custom_greeting: "Hello everyone! I'm your AI assistant, ready to help with the discussion.",
-        callback_url: `${getServerUrl()}/webhook/tavus-callback`,
+        custom_greeting: "Hello! I'm your AI assistant, ready to help with the discussion.",
       }),
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("❌ Tavus API error:", errorText);
-      throw new Error(`Tavus API error: ${response.status} - ${errorText}`);
+    if (!tavusResponse.ok) {
+      throw new Error(`Tavus API error: ${await tavusResponse.text()}`);
     }
 
-    const conversationData = await response.json();
-    console.log("✅ Conversation created:", conversationData.conversation_id);
-    
-    // Store the conversation
-    activeConversations.set(conversationData.conversation_id, {
-      conversationId: conversationData.conversation_id,
-      conversationUrl: conversationData.conversation_url,
-      createdAt: new Date(),
-      status: conversationData.status
+    const tavusData = await tavusResponse.json();
+    console.log("✅ Tavus conversation created:", tavusData.conversation_id);
+
+    // 2. Deploy Recall.ai bot with the Tavus Daily.co URL
+    const botResponse = await fetch("https://us-west-2.recall.ai/api/v1/bot/", {
+      method: "POST",
+      headers: {
+        'Authorization': RECALL_API_KEY,
+        'accept': 'application/json',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        "meeting_url": meeting_url,
+        "bot_name": "AI Assistant",
+        "output_media": {
+          "camera": {
+            "kind": "webpage",
+            "config": {
+              "url": `${getServerUrl()}/bot-interface.html?conversationUrl=${encodeURIComponent(tavusData.conversation_url)}&conversationId=${tavusData.conversation_id}`
+            }
+          }
+        },
+        "variant": {
+          "google_meet": "web_4_core"
+        }
+      })
+    });
+
+    if (!botResponse.ok) {
+      throw new Error(`Recall.ai API error: ${await botResponse.text()}`);
+    }
+
+    const botData = await botResponse.json();
+
+    // Store conversation info
+    activeConversations.set(tavusData.conversation_id, {
+      conversationId: tavusData.conversation_id,
+      conversationUrl: tavusData.conversation_url,
+      botId: botData.id,
+      meetingUrl: meeting_url,
+      createdAt: new Date()
     });
 
     res.json({
       success: true,
-      meetingUrl: conversationData.conversation_url,
-      conversationId: conversationData.conversation_id,
-      status: conversationData.status
+      botId: botData.id,
+      conversationId: tavusData.conversation_id,
+      conversationUrl: tavusData.conversation_url,
+      meetingUrl: meeting_url,
+      status: "deployed"
     });
 
   } catch (error) {
-    console.error("❌ Error creating meeting:", error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message 
-    });
-  }
-});
-
-// Get conversation status
-app.get("/conversation/:id", async (req, res) => {
-  try {
-    const conversationId = req.params.id;
-    const conversation = activeConversations.get(conversationId);
-    
-    if (!conversation) {
-      return res.status(404).json({ error: "Conversation not found" });
-    }
-
-    res.json({
-      conversationId: conversation.conversationId,
-      conversationUrl: conversation.conversationUrl,
-      status: conversation.status,
-      createdAt: conversation.createdAt
-    });
-
-  } catch (error) {
-    console.error("Error getting conversation:", error);
+    console.error("❌ Error deploying bot:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Webhook endpoint for Tavus callbacks
-app.post("/webhook/tavus-callback", express.json(), (req, res) => {
-  console.log("📨 Received Tavus webhook:", JSON.stringify(req.body, null, 2));
-  
-  const event = req.body;
-  
-  // Handle different webhook events
-  switch (event.type) {
-    case "conversation.started":
-      console.log("🎉 Conversation started:", event.conversation_id);
-      break;
-    case "conversation.ended":
-      console.log("🔚 Conversation ended:", event.conversation_id);
-      activeConversations.delete(event.conversation_id);
-      break;
-    case "participant.joined":
-      console.log("👤 Participant joined:", event.participant_id);
-      break;
-    case "participant.left":
-      console.log("👋 Participant left:", event.participant_id);
-      break;
-    case "transcription":
-      console.log("🗣️ Transcription:", event.text);
-      break;
-    default:
-      console.log("📝 Unknown webhook type:", event.type);
+// Webhook endpoint for Recall.ai transcriptions
+app.post("/webhook/recall-transcription", async (req, res) => {
+  try {
+    console.log("📝 Received Recall.ai transcription:", req.body);
+    
+    // Extract transcription from Recall.ai webhook
+    const transcription = req.body.transcript || req.body.text;
+    const botId = req.body.bot_id;
+    
+    if (!transcription) {
+      return res.status(400).send("No transcription found");
+    }
+
+    console.log(`🗣️ Processing transcription from bot ${botId}: ${transcription}`);
+
+    // Find the conversation for this bot and forward the transcription
+    // In production, you'd send this to the bot interface via WebSocket
+    // For now, we'll log it and you can implement the WebSocket forwarding
+    
+    res.status(200).send("Transcription received");
+    
+  } catch (error) {
+    console.error("Error processing transcription:", error);
+    res.status(500).send("Internal server error");
   }
-  
-  res.sendStatus(200);
-});
-
-// Webhook endpoint for Recall.ai
-app.post("/webhook/recall", express.json(), (req, res) => {
-  console.log("📝 Received Recall.ai webhook:", JSON.stringify(req.body, null, 2));
-  // Process Recall.ai transcription here
-  res.sendStatus(200);
-});
-
-// Health check endpoint
-app.get("/health", (req, res) => {
-  res.json({ 
-    status: "OK", 
-    timestamp: new Date().toISOString(),
-    activeConversations: activeConversations.size
-  });
-});
-
-// Get server info
-app.get("/info", (req, res) => {
-  res.json({
-    replicaId: REPLICA_ID,
-    personaId: PERSONA_ID,
-    serverUrl: getServerUrl(),
-    hasApiKey: !!TAVUS_API_KEY
-  });
 });
 
 function getServerUrl() {
@@ -172,10 +147,4 @@ function getServerUrl() {
   return `http://localhost:${PORT}`;
 }
 
-app.listen(PORT, () => {
-  console.log(`🚀 Tavus AI Meeting Server running on port ${PORT}`);
-  console.log(`🔑 Using Replica ID: ${REPLICA_ID}`);
-  console.log(`👤 Using Persona ID: ${PERSONA_ID}`);
-  console.log(`🌐 Server URL: ${getServerUrl()}`);
-  console.log(`💡 Make sure you have created a persona with pipeline_mode: "echo" for LiveKit compatibility`);
-});
+console.log(`🤖 Server ready! Tavus conversations will use Daily.co sendAppMessage()`);
