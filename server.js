@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 
 const TAVUS_API_KEY = process.env.TAVUS_API_KEY;
 const RECALL_API_KEY = process.env.RECALL_API_KEY;
-const REPLICA_ID = process.env.REPLICA_ID || "r92debe21318";
+const REPLICA_ID = process.env.REPLICA_ID || "r6ae5b6efc9d";
 const PERSONA_ID = process.env.PERSONA_ID;
 
 if (!TAVUS_API_KEY || !RECALL_API_KEY || !PERSONA_ID) {
@@ -197,7 +197,7 @@ app.post("/webhook/recall-transcription", async (req, res) => {
         await handleTranscriptProcessing(event);
         break;
         
-      case 'bot.joining_call':  // ✅ Correct event name
+      case 'bot.joining_call':
         console.log('🔄 Bot is joining the meeting:', event.data?.bot?.id);
         break;
         
@@ -244,7 +244,7 @@ async function handleTranscriptDone(event) {
   }
 
   // Use the last few sentences (most recent speech)
-  const recentText = sentences.slice(-3).join(' '); // Last 3 sentences
+  const recentText = sentences.slice(-3).join(' ');
   console.log(`🗣️ Recent transcription: "${recentText}"`);
 
   // Find conversation for this bot and send transcription
@@ -259,7 +259,7 @@ async function handleTranscriptDone(event) {
   }
 }
 
-// Handle processing transcriptions (might contain partial results)
+// Handle processing transcriptions
 async function handleTranscriptProcessing(event) {
   const transcript = event.data?.transcript;
   const botId = event.data?.bot?.id;
@@ -268,7 +268,6 @@ async function handleTranscriptProcessing(event) {
     return;
   }
 
-  // Get the latest sentence from the processing transcript
   const sentences = transcript.sentences
     .filter(s => s.text && s.text.trim())
     .map(s => s.text.trim());
@@ -278,7 +277,6 @@ async function handleTranscriptProcessing(event) {
   const latestText = sentences[sentences.length - 1];
   console.log(`🔄 Transcript PROCESSING - Latest: "${latestText}"`);
 
-  // Send to the appropriate conversation
   for (const [conversationId, session] of activeConversations.entries()) {
     if (session.botId === botId) {
       sendTranscriptionToConversation(conversationId, latestText);
@@ -286,6 +284,31 @@ async function handleTranscriptProcessing(event) {
     }
   }
 }
+
+// Add this endpoint to handle test messages from index.html
+app.post("/send-test-message", async (req, res) => {
+  try {
+    const { conversationId, text } = req.body;
+    
+    if (!conversationId || !text) {
+      return res.status(400).json({ error: 'conversationId and text are required' });
+    }
+
+    console.log(`🧪 Test message for ${conversationId}: ${text}`);
+    
+    // Send to WebSocket
+    const success = sendTranscriptionToConversation(conversationId, text);
+    
+    res.json({
+      success: success,
+      message: success ? 'Test message sent' : 'No active WebSocket connection'
+    });
+
+  } catch (error) {
+    console.error('Error sending test message:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Test endpoint to simulate transcriptions
 app.post("/simulate-transcription", async (req, res) => {
@@ -298,7 +321,6 @@ app.post("/simulate-transcription", async (req, res) => {
 
     console.log(`🎤 Simulating transcription for ${conversationId}: ${text}`);
     
-    // Send to WebSocket
     const success = sendTranscriptionToConversation(conversationId, text);
     
     res.json({
@@ -320,7 +342,7 @@ app.get("/webhook-info", (req, res) => {
     required_events: [
       "transcript.done",
       "transcript.processing",
-      "bot.joining_call",  // ✅ Correct event name
+      "bot.joining_call",
       "bot.in_call_recording",
       "bot.call_ended"
     ],
