@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tavus AI for Google Meet</title>
+  <style>
+    body { margin: 0; padding: 0; background: #000; color: white; font-family: Arial; overflow: hidden; }
+    #container { display: flex; flex-direction: column; height: 100vh; width: 100vw; }
+    #status { padding: 10px; background: #333; text-align: center; position: absolute; top: 0; left: 0; right: 0; z-index: 1000; }
+    #dailyFrame { flex: 1; border: none; width: 100%; height: 100%; }
+    #logs { display: none; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="status">🔄 Loading Tavus Avatar for Google Meet...</div>
+    <div id="dailyFrame"></div>
+    <div id="logs"></div>
+  </div>
+
+  <script src="https://unpkg.com/@daily-co/daily-js"></script>
+  <script>
+    // Get parameters from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const conversationUrl = urlParams.get('conversationUrl');
+    const conversationId = urlParams.get('conversationId');
+    
+    const status = document.getElementById('status');
+    const dailyFrame = document.getElementById('dailyFrame');
+    const logs = document.getElementById('logs');
+
+    let callFrame;
+
+    function log(message) {
+      console.log(message);
+    }
+
+    // Initialize Daily.co call frame
+    async function initializeDailyCall() {
+      if (!conversationUrl) {
+        status.textContent = '❌ Missing conversation URL';
+        return;
+      }
+
+      try {
+        log('Initializing Daily.co for Google Meet integration...');
+        
+        // Create Daily call frame
+        callFrame = window.DailyIframe.createFrame(dailyFrame, {
+          url: conversationUrl,
+          iframeStyle: {
+            position: 'absolute',
+            width: '100%',
+            height: '100%',
+            border: '0'
+          },
+          showLeaveButton: false,
+          showFullscreenButton: false,
+          showParticipantsBar: false
+        });
+
+        // Set up event listeners
+        callFrame.on('loaded', () => {
+          status.textContent = '✅ Tavus Avatar Loaded';
+          log('Daily.co frame loaded for Google Meet');
+        });
+
+        callFrame.on('joining-meeting', () => {
+          status.textContent = '🔄 Joining Tavus conversation...';
+          log('Joining Tavus conversation for Google Meet');
+        });
+
+        callFrame.on('joined-meeting', (event) => {
+          status.textContent = '✅ Tavus Avatar Active in Google Meet';
+          log('Successfully joined Tavus conversation');
+          log(`Conversation ID: ${conversationId}`);
+          
+          // Hide status after successful join
+          setTimeout(() => {
+            status.style.display = 'none';
+          }, 3000);
+        });
+
+        callFrame.on('app-message', (event) => {
+          log(`Received app message: ${JSON.stringify(event.data)}`);
+        });
+
+        callFrame.on('error', (error) => {
+          status.textContent = '❌ Daily.co Error';
+          log(`Daily.co error: ${error}`);
+        });
+
+        // Join the call with bot-optimized settings
+        await callFrame.join({
+          video: false,
+          audio: false,
+          startWithAudioMuted: true,
+          startWithVideoMuted: true
+        });
+        
+      } catch (error) {
+        status.textContent = '❌ Failed to initialize Daily.co';
+        log(`Initialization error: ${error.message}`);
+      }
+    }
+
+    // Function to send text to Tavus avatar
+    function sendTextToAvatar(text) {
+      if (!callFrame) {
+        log('❌ Daily call not initialized');
+        return;
+      }
+
+      const message = {
+        "message_type": "conversation",
+        "event_type": "conversation.respond", 
+        "conversation_id": conversationId,
+        "properties": {
+          "text": text
+        }
+      };
+
+      callFrame.sendAppMessage(message, '*')
+        .then(() => {
+          log(`✅ Sent to Tavus avatar: "${text}"`);
+        })
+        .catch(error => {
+          log(`❌ Failed to send message to Tavus: ${error}`);
+        });
+    }
+
+    // WebSocket connection to receive transcriptions from Google Meet
+    function connectWebSocket() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${protocol}//${window.location.host}/transcriptions?conversationId=${conversationId}`);
+      
+      ws.onopen = () => {
+        log('✅ Connected to transcription server - Ready for Google Meet audio');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.text && data.type === 'transcription') {
+            log(`🎤 Received from Google Meet: "${data.text}"`);
+            sendTextToAvatar(data.text);
+          }
+        } catch (error) {
+          log(`❌ Error parsing WebSocket message: ${error}`);
+        }
+      };
+
+      ws.onclose = () => {
+        log('🔴 Disconnected from transcription server');
+        setTimeout(connectWebSocket, 5000);
+      };
+
+      ws.onerror = (error) => {
+        log(`❌ WebSocket error: ${error}`);
+      };
+    }
+
+    // Initialize everything when page loads
+    window.addEventListener('load', () => {
+      log('Google Meet interface initialized');
+      log(`Conversation ID: ${conversationId}`);
+      initializeDailyCall();
+      setTimeout(connectWebSocket, 2000);
+    });
+
+  </script>
+</body>
+</html>
