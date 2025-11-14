@@ -410,14 +410,12 @@
         log(`❌ Deployment failed: ${error.message}`);
         updateStatus(`❌ Error: ${error.message}`, 'error');
         
-        // Show specific guidance for common errors
         if (error.message.includes('Tavus API')) {
           log('💡 Check your TAVUS_API_KEY and PERSONA_ID in .env file');
         } else if (error.message.includes('Recall.ai API')) {
           log('💡 Check your RECALL_API_KEY in .env file');
         }
       } finally {
-        // Reset button
         btnText.textContent = '🚀 Deploy AI Avatar to Meeting';
         deployBtn.disabled = false;
       }
@@ -440,8 +438,6 @@
       log(`📨 Sending test message: "${message}"`);
 
       try {
-        // In a real implementation, you'd send this via WebSocket to the bot interface
-        // For now, we'll simulate the process
         const response = await fetch('/send-test-message', {
           method: 'POST',
           headers: {
@@ -453,11 +449,13 @@
           })
         });
 
-        if (response.ok) {
+        const data = await response.json();
+
+        if (data.success) {
           log(`✅ Test message sent to conversation: ${window.currentConversationId}`);
           testMessage.value = '';
         } else {
-          throw new Error('Failed to send test message');
+          throw new Error(data.message || 'Failed to send test message');
         }
 
       } catch (error) {
