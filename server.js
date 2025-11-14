@@ -1,288 +1,181 @@
 import express from "express";
-import { WebSocketServer } from "ws";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
 
 dotenv.config();
 
+const app = express();
 const PORT = process.env.PORT || 3000;
-const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY;
-const AVATAR_ID = process.env.AVATAR_ID || "Wayne_20240711"; // Default avatar
 
-if (!HEYGEN_API_KEY) {
-  console.error("Missing HEYGEN_API_KEY in .env");
+// Load your credentials from .env file
+const TAVUS_API_KEY = process.env.TAVUS_API_KEY;
+const REPLICA_ID = process.env.REPLICA_ID || "r92debe21318";
+const PERSONA_ID = process.env.PERSONA_ID;
+
+// Validate required environment variables
+if (!TAVUS_API_KEY) {
+  console.error("❌ Missing TAVUS_API_KEY in .env file");
   process.exit(1);
 }
 
-const app = express();
+if (!PERSONA_ID) {
+  console.error("❌ Missing PERSONA_ID in .env file");
+  console.log("💡 Create a persona first using the curl command provided in the instructions");
+  process.exit(1);
+}
+
 app.use(express.json());
 app.use(express.static("public"));
 
-// Store active sessions
-const activeSessions = new Map();
+// Store active conversations
+const activeConversations = new Map();
 
-const server = app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+// Endpoint to create a Tavus conversation
+app.post("/create-meeting", async (req, res) => {
+  try {
+    console.log("🔄 Creating Tavus conversation...");
+    
+    const response = await fetch("https://tavusapi.com/v2/conversations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": TAVUS_API_KEY,
+      },
+      body: JSON.stringify({
+        replica_id: REPLICA_ID,
+        persona_id: PERSONA_ID,
+        conversation_name: "AI Meeting Assistant",
+        conversational_context: "You are an AI assistant participating in a Google Meet meeting. Provide helpful, concise responses.",
+        audio_only: false,
+        custom_greeting: "Hello everyone! I'm your AI assistant, ready to help with the discussion.",
+        callback_url: `${getServerUrl()}/webhook/tavus-callback`,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("❌ Tavus API error:", errorText);
+      throw new Error(`Tavus API error: ${response.status} - ${errorText}`);
+    }
+
+    const conversationData = await response.json();
+    console.log("✅ Conversation created:", conversationData.conversation_id);
+    
+    // Store the conversation
+    activeConversations.set(conversationData.conversation_id, {
+      conversationId: conversationData.conversation_id,
+      conversationUrl: conversationData.conversation_url,
+      createdAt: new Date(),
+      status: conversationData.status
+    });
+
+    res.json({
+      success: true,
+      meetingUrl: conversationData.conversation_url,
+      conversationId: conversationData.conversation_id,
+      status: conversationData.status
+    });
+
+  } catch (error) {
+    console.error("❌ Error creating meeting:", error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
 });
 
-const wss = new WebSocketServer({ server });
+// Get conversation status
+app.get("/conversation/:id", async (req, res) => {
+  try {
+    const conversationId = req.params.id;
+    const conversation = activeConversations.get(conversationId);
+    
+    if (!conversation) {
+      return res.status(404).json({ error: "Conversation not found" });
+    }
 
-wss.on("connection", (ws) => {
-  console.log("🟢 Client connected to avatar server");
+    res.json({
+      conversationId: conversation.conversationId,
+      conversationUrl: conversation.conversationUrl,
+      status: conversation.status,
+      createdAt: conversation.createdAt
+    });
+
+  } catch (error) {
+    console.error("Error getting conversation:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Webhook endpoint for Tavus callbacks
+app.post("/webhook/tavus-callback", express.json(), (req, res) => {
+  console.log("📨 Received Tavus webhook:", JSON.stringify(req.body, null, 2));
   
-  ws.on("message", async (data) => {
-    try {
-      const message = JSON.parse(data);
-      
-      if (message.type === "start_avatar") {
-        await startHeyGenSession(ws, message.avatarId);
-      }
-      else if (message.type === "stop_avatar") {
-        await stopHeyGenSession(ws);
-      }
-      else if (message.type === "user_speech") {
-        await sendTextToAvatar(ws, message.text, message.taskType || "talk");
-      }
-      
-    } catch (error) {
-      console.error("Error handling client message:", error);
-      ws.send(JSON.stringify({
-        type: "error",
-        message: error.message
-      }));
-    }
-  });
-
-  ws.on("close", () => {
-    console.log("🔴 Client disconnected");
-    // Clean up any active session for this client
-    for (const [sessionId, session] of activeSessions.entries()) {
-      if (session.client === ws) {
-        stopHeyGenSession(ws);
-        break;
-      }
-    }
-  });
-});
-
-// Webhook endpoint for Recall.ai to send transcribed speech
-app.post("/webhook/recall-transcription", async (req, res) => {
-  try {
-    console.log("📝 Received transcription from Recall.ai:", req.body);
-    
-    // Extract transcription from Recall.ai webhook
-    // This structure might vary - adjust based on Recall.ai's actual webhook format
-    const transcription = req.body.transcript || req.body.text;
-    const meetingId = req.body.meeting_id;
-    
-    if (!transcription) {
-      return res.status(400).send("No transcription found");
-    }
-
-    // Find active session for this meeting and send text to avatar
-    for (const [sessionId, session] of activeSessions.entries()) {
-      // In a real app, you'd map meetingId to sessionId
-      await sendTextToAvatar(session.client, transcription, "talk");
+  const event = req.body;
+  
+  // Handle different webhook events
+  switch (event.type) {
+    case "conversation.started":
+      console.log("🎉 Conversation started:", event.conversation_id);
       break;
-    }
-
-    res.status(200).send("Transcription processed");
-    
-  } catch (error) {
-    console.error("Error processing Recall.ai webhook:", error);
-    res.status(500).send("Internal server error");
-  }
-});
-
-// Endpoint to manually test avatar (without Recall.ai)
-app.post("/api/speak", async (req, res) => {
-  try {
-    const { text, taskType = "talk" } = req.body;
-    
-    if (!text) {
-      return res.status(400).send("Text is required");
-    }
-
-    // Send to first active session (in real app, you'd specify which session)
-    for (const [sessionId, session] of activeSessions.entries()) {
-      await sendTextToAvatar(session.client, text, taskType);
+    case "conversation.ended":
+      console.log("🔚 Conversation ended:", event.conversation_id);
+      activeConversations.delete(event.conversation_id);
       break;
-    }
-
-    res.status(200).send("Text sent to avatar");
-    
-  } catch (error) {
-    console.error("Error in /api/speak:", error);
-    res.status(500).send("Internal server error");
+    case "participant.joined":
+      console.log("👤 Participant joined:", event.participant_id);
+      break;
+    case "participant.left":
+      console.log("👋 Participant left:", event.participant_id);
+      break;
+    case "transcription":
+      console.log("🗣️ Transcription:", event.text);
+      break;
+    default:
+      console.log("📝 Unknown webhook type:", event.type);
   }
+  
+  res.sendStatus(200);
 });
 
-// Start HeyGen session
-async function startHeyGenSession(ws, avatarId = AVATAR_ID) {
-  try {
-    console.log("🔄 Starting HeyGen session...");
-    
-    // Create new session
-    const sessionResponse = await fetch("https://api.heygen.com/v1/streaming.new", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${HEYGEN_API_KEY}`
-      },
-      body: JSON.stringify({
-        quality: "high",
-        avatar_name: avatarId,
-        voice: {
-          voice_id: "", // HeyGen will use default voice
-          rate: 1.0,
-        },
-        version: "v2",
-        video_encoding: "H264"
-      })
-    });
+// Webhook endpoint for Recall.ai
+app.post("/webhook/recall", express.json(), (req, res) => {
+  console.log("📝 Received Recall.ai webhook:", JSON.stringify(req.body, null, 2));
+  // Process Recall.ai transcription here
+  res.sendStatus(200);
+});
 
-    if (!sessionResponse.ok) {
-      throw new Error(`HeyGen API error: ${await sessionResponse.text()}`);
-    }
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({ 
+    status: "OK", 
+    timestamp: new Date().toISOString(),
+    activeConversations: activeConversations.size
+  });
+});
 
-    const sessionData = await sessionResponse.json();
-    const sessionInfo = sessionData.data;
-    
-    console.log("✅ HeyGen session created:", sessionInfo.session_id);
+// Get server info
+app.get("/info", (req, res) => {
+  res.json({
+    replicaId: REPLICA_ID,
+    personaId: PERSONA_ID,
+    serverUrl: getServerUrl(),
+    hasApiKey: !!TAVUS_API_KEY
+  });
+});
 
-    // Start streaming
-    const startResponse = await fetch("https://api.heygen.com/v1/streaming.start", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${HEYGEN_API_KEY}`
-      },
-      body: JSON.stringify({
-        session_id: sessionInfo.session_id
-      })
-    });
-
-    if (!startResponse.ok) {
-      throw new Error(`HeyGen start error: ${await startResponse.text()}`);
-    }
-
-    // Store session info
-    activeSessions.set(sessionInfo.session_id, {
-      client: ws,
-      sessionId: sessionInfo.session_id,
-      createdAt: new Date()
-    });
-
-    // Send LiveKit info to client
-    ws.send(JSON.stringify({
-      type: "heygen_session_created",
-      sessionId: sessionInfo.session_id,
-      livekitUrl: sessionInfo.url,
-      livekitToken: sessionInfo.access_token
-    }));
-
-  } catch (error) {
-    console.error("Error starting HeyGen session:", error);
-    ws.send(JSON.stringify({
-      type: "error",
-      message: `Failed to start avatar: ${error.message}`
-    }));
+function getServerUrl() {
+  if (process.env.RENDER_EXTERNAL_HOSTNAME) {
+    return `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`;
   }
+  return `http://localhost:${PORT}`;
 }
 
-// Stop HeyGen session
-async function stopHeyGenSession(ws) {
-  try {
-    let sessionToStop = null;
-    
-    // Find session for this client
-    for (const [sessionId, session] of activeSessions.entries()) {
-      if (session.client === ws) {
-        sessionToStop = session;
-        break;
-      }
-    }
-
-    if (!sessionToStop) {
-      console.log("No active session found for client");
-      return;
-    }
-
-    console.log("🛑 Stopping HeyGen session:", sessionToStop.sessionId);
-    
-    const stopResponse = await fetch("https://api.heygen.com/v1/streaming.stop", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${HEYGEN_API_KEY}`
-      },
-      body: JSON.stringify({
-        session_id: sessionToStop.sessionId
-      })
-    });
-
-    activeSessions.delete(sessionToStop.sessionId);
-    
-    ws.send(JSON.stringify({
-      type: "heygen_session_stopped"
-    }));
-
-    console.log("✅ HeyGen session stopped");
-
-  } catch (error) {
-    console.error("Error stopping HeyGen session:", error);
-  }
-}
-
-// Send text to avatar
-async function sendTextToAvatar(ws, text, taskType = "talk") {
-  try {
-    let targetSession = null;
-    
-    // Find session for this client
-    for (const [sessionId, session] of activeSessions.entries()) {
-      if (session.client === ws) {
-        targetSession = session;
-        break;
-      }
-    }
-
-    if (!targetSession) {
-      throw new Error("No active avatar session found");
-    }
-
-    console.log(`🗣️ Sending text to avatar (${taskType}):`, text.substring(0, 50) + "...");
-    
-    const taskResponse = await fetch("https://api.heygen.com/v1/streaming.task", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${HEYGEN_API_KEY}`
-      },
-      body: JSON.stringify({
-        session_id: targetSession.sessionId,
-        text: text,
-        task_type: taskType
-      })
-    });
-
-    if (!taskResponse.ok) {
-      throw new Error(`HeyGen task error: ${await taskResponse.text()}`);
-    }
-
-    ws.send(JSON.stringify({
-      type: "text_sent_to_avatar",
-      text: text,
-      taskType: taskType
-    }));
-
-  } catch (error) {
-    console.error("Error sending text to avatar:", error);
-    ws.send(JSON.stringify({
-      type: "error", 
-      message: `Failed to send text: ${error.message}`
-    }));
-  }
-}
-
-console.log(`🤖 HeyGen Avatar Server ready on port ${PORT}`);
+app.listen(PORT, () => {
+  console.log(`🚀 Tavus AI Meeting Server running on port ${PORT}`);
+  console.log(`🔑 Using Replica ID: ${REPLICA_ID}`);
+  console.log(`👤 Using Persona ID: ${PERSONA_ID}`);
+  console.log(`🌐 Server URL: ${getServerUrl()}`);
+  console.log(`💡 Make sure you have created a persona with pipeline_mode: "echo" for LiveKit compatibility`);
+});
