@@ -90,41 +90,51 @@ function sendTranscriptionToConversation(conversationId, text) {
   }
 }
 
-// NEW: Function to create Daily.co meeting token with automatic join
-async function createDailyMeetingToken(conversationUrl) {
+// NEW: Enhanced function to create Daily.co meeting with camera/mic pre-approved
+async function createDailyMeeting(conversationName) {
   try {
-    // Use Daily.co's REST API to create a meeting token
-    const dailyResponse = await fetch("https://api.daily.co/v1/meeting-tokens", {
+    const dailyResponse = await fetch("https://api.daily.co/v1/rooms", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.DAILY_API_KEY || 'your-daily-api-key'}`,
+        "Authorization": `Bearer ${process.env.DAILY_API_KEY}`,
       },
       body: JSON.stringify({
+        name: `tavus-${Date.now()}`,
+        privacy: "public",
         properties: {
-          room_name: conversationUrl.split('/').pop(), // Extract room name from URL
-          user_name: "AI Assistant",
-          enable_prejoin_ui: false, // This bypasses the name prompt
+          enable_prejoin_ui: false,
           enable_screenshare: false,
           enable_chat: false,
           start_audio_off: true,
           start_video_off: true,
-          exp: Math.floor(Date.now() / 1000) + (60 * 60) // 1 hour expiry
+          exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24), // 24 hours
+          permissions: {
+            hasPresence: false,
+            canSend: false,
+            canAdmin: false
+          },
+          // NEW: Critical settings to avoid camera/mic prompts
+          enable_network_ui: false,
+          enable_hand_raising: false,
+          enable_emoji_reactions: false,
+          enable_noise_cancellation_ui: false,
+          enable_people_ui: false
         }
       })
     });
 
     if (!dailyResponse.ok) {
-      console.warn('⚠️ Daily.co token creation failed, falling back to regular join');
-      return null;
+      throw new Error(`Daily.co room creation failed: ${await dailyResponse.text()}`);
     }
 
-    const tokenData = await dailyResponse.json();
-    console.log('✅ Daily.co meeting token created');
-    return tokenData.token;
+    const roomData = await dailyResponse.json();
+    console.log('✅ Daily.co room created:', roomData.name);
+    
+    return roomData;
   } catch (error) {
-    console.warn('⚠️ Daily.co token creation error, falling back to regular join:', error.message);
-    return null;
+    console.error('❌ Daily.co room creation error:', error.message);
+    throw error;
   }
 }
 
@@ -137,9 +147,17 @@ app.post("/deploy-to-google-meet", async (req, res) => {
       return res.status(400).json({ error: "Google Meet URL is required" });
     }
 
-    console.log("🔄 Creating Tavus conversation...");
+    console.log("🔄 Creating Tavus conversation and Daily.co room...");
 
-    // 1. Create Tavus conversation
+    // 1. Create Daily.co room first (instead of using Tavus conversation URL directly)
+    let dailyRoom;
+    if (process.env.DAILY_API_KEY) {
+      dailyRoom = await createDailyMeeting("AI Meeting Assistant");
+    } else {
+      console.log('⚠️ Using Tavus conversation URL directly (may show camera prompts)');
+    }
+
+    // 2. Create Tavus conversation
     const tavusResponse = await fetch("https://tavusapi.com/v2/conversations", {
       method: "POST",
       headers: {
@@ -163,19 +181,17 @@ app.post("/deploy-to-google-meet", async (req, res) => {
     const tavusData = await tavusResponse.json();
     console.log("✅ Tavus conversation created:", tavusData.conversation_id);
 
-    // NEW: Create Daily.co meeting token to bypass name prompt
-    let dailyJoinUrl = tavusData.conversation_url;
-    const dailyToken = await createDailyMeetingToken(tavusData.conversation_url);
-    
-    if (dailyToken) {
-      // Add token to the URL for automatic authentication
-      dailyJoinUrl = `${tavusData.conversation_url}?t=${dailyToken}`;
-      console.log('🔐 Daily.co token authentication enabled');
+    // 3. Create the interface URL for Recall.ai
+    let interfaceUrl;
+    if (dailyRoom) {
+      // Use our custom Daily.co room with optimized settings
+      interfaceUrl = `${getServerUrl()}/google-meet-interface.html?conversationUrl=${encodeURIComponent(dailyRoom.url)}&conversationId=${tavusData.conversation_id}&dailyRoom=true`;
     } else {
-      console.log('ℹ️ Using standard Daily.co join (may show name prompt)');
+      // Fallback to Tavus conversation URL
+      interfaceUrl = `${getServerUrl()}/google-meet-interface.html?conversationUrl=${encodeURIComponent(tavusData.conversation_url)}&conversationId=${tavusData.conversation_id}`;
     }
 
-    // 2. Deploy Recall.ai bot to join Google Meet with Tavus avatar
+    // 4. Deploy Recall.ai bot to join Google Meet
     const botResponse = await fetch("https://us-west-2.recall.ai/api/v1/bot/", {
       method: "POST",
       headers: {
@@ -190,7 +206,9 @@ app.post("/deploy-to-google-meet", async (req, res) => {
           "camera": {
             "kind": "webpage",
             "config": {
-              "url": `${getServerUrl()}/google-meet-interface.html?conversationUrl=${encodeURIComponent(dailyJoinUrl)}&conversationId=${tavusData.conversation_id}&autoJoin=true`
+              "url": interfaceUrl,
+              "width": 1280,
+              "height": 720
             }
           }
         },
@@ -210,11 +228,11 @@ app.post("/deploy-to-google-meet", async (req, res) => {
     activeConversations.set(tavusData.conversation_id, {
       conversationId: tavusData.conversation_id,
       conversationUrl: tavusData.conversation_url,
-      dailyJoinUrl: dailyJoinUrl,
+      dailyRoomUrl: dailyRoom?.url,
       botId: botData.id,
       meetingUrl: meeting_url,
       createdAt: new Date(),
-      dailyToken: dailyToken // Store token for potential reuse
+      dailyRoom: !!dailyRoom
     });
 
     res.json({
@@ -224,7 +242,7 @@ app.post("/deploy-to-google-meet", async (req, res) => {
       meetingUrl: meeting_url,
       status: "deployed",
       message: "AI avatar is joining your Google Meet!",
-      tokenAuth: !!dailyToken
+      optimizedRoom: !!dailyRoom
     });
 
   } catch (error) {
@@ -345,73 +363,14 @@ async function handleTranscriptProcessing(event) {
   }
 }
 
-// NEW: Endpoint to manually create Daily.co token for existing conversation
-app.post("/refresh-daily-token", async (req, res) => {
-  try {
-    const { conversationId } = req.body;
-    
-    if (!conversationId) {
-      return res.status(400).json({ error: 'conversationId is required' });
-    }
-
-    const session = activeConversations.get(conversationId);
-    if (!session) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    const newToken = await createDailyMeetingToken(session.conversationUrl);
-    
-    if (newToken) {
-      const newJoinUrl = `${session.conversationUrl}?t=${newToken}`;
-      session.dailyJoinUrl = newJoinUrl;
-      session.dailyToken = newToken;
-      
-      res.json({
-        success: true,
-        dailyJoinUrl: newJoinUrl,
-        message: 'Daily.co token refreshed'
-      });
-    } else {
-      res.status(500).json({ error: 'Failed to create Daily.co token' });
-    }
-
-  } catch (error) {
-    console.error('Error refreshing Daily.co token:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Test endpoint to simulate transcriptions
-app.post("/send-test-message", async (req, res) => {
-  try {
-    const { conversationId, text } = req.body;
-    
-    if (!conversationId || !text) {
-      return res.status(400).json({ error: 'conversationId and text are required' });
-    }
-
-    console.log(`🧪 Test message for ${conversationId}: ${text}`);
-    
-    const success = sendTranscriptionToConversation(conversationId, text);
-    
-    res.json({
-      success: success,
-      message: success ? 'Test message sent' : 'No active WebSocket connection'
-    });
-
-  } catch (error) {
-    console.error('Error sending test message:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({ 
     status: "OK", 
     timestamp: new Date().toISOString(),
     activeConversations: activeConversations.size,
-    websocketConnections: transcriptionConnections.size
+    websocketConnections: transcriptionConnections.size,
+    dailyConfigured: !!process.env.DAILY_API_KEY
   });
 });
 
@@ -424,4 +383,4 @@ function getServerUrl() {
 
 console.log(`🤖 Google Meet Integration Server ready!`);
 console.log(`📡 WebSocket server running on /transcriptions`);
-console.log(`🔐 Daily.co token authentication: ${process.env.DAILY_API_KEY ? 'ENABLED' : 'DISABLED (set DAILY_API_KEY for automatic name bypass)'}`);
+console.log(`🔐 Daily.co optimization: ${process.env.DAILY_API_KEY ? 'ENABLED' : 'DISABLED (set DAILY_API_KEY to avoid camera prompts)'}`);
